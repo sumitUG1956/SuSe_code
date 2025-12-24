@@ -5,3 +5,9 @@ numpy
 pandas
 polars
 websocket-client
+numba
+PyQt6
+pyqtgraph
+requests
+python-dotenv
+pydantic
