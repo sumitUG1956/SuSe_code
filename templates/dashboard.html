@@ -1,0 +1,447 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Algo Normalized Options Dashboard</title>
+    
+    <!-- Highcharts -->
+    <script src="https://code.highcharts.com/stock/highstock.js"></script>
+    <script src="https://code.highcharts.com/stock/modules/exporting.js"></script>
+    
+    <style>
+        :root {
+            --bg-primary: #0d1117;
+            --bg-secondary: #161b22;
+            --bg-tertiary: #21262d;
+            --text-primary: #f0f6fc;
+            --text-secondary: #8b949e;
+            --accent-blue: #58a6ff;
+            --accent-green: #3fb950;
+            --accent-red: #f85149;
+            --border-color: #30363d;
+        }
+        
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+        }
+        
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", "Noto Sans", Helvetica, Arial, sans-serif;
+            background-color: var(--bg-primary);
+            color: var(--text-primary);
+            min-height: 100vh;
+        }
+        
+        .header {
+            background: var(--bg-secondary);
+            padding: 12px 20px;
+            border-bottom: 1px solid var(--border-color);
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            position: sticky;
+            top: 0;
+            z-index: 1000;
+        }
+        
+        .header-left {
+            display: flex;
+            align-items: center;
+            gap: 20px;
+        }
+        
+        .logo {
+            font-size: 18px;
+            font-weight: 600;
+            color: var(--accent-blue);
+        }
+        
+        .index-tabs {
+            display: flex;
+            gap: 8px;
+        }
+        
+        .index-tab {
+            padding: 6px 16px;
+            border: 1px solid var(--border-color);
+            border-radius: 6px;
+            background: var(--bg-tertiary);
+            color: var(--text-secondary);
+            cursor: pointer;
+            font-size: 13px;
+            font-weight: 500;
+            transition: all 0.2s ease;
+        }
+        
+        .index-tab:hover {
+            background: var(--bg-primary);
+            color: var(--text-primary);
+        }
+        
+        .index-tab.active {
+            background: var(--accent-blue);
+            color: white;
+            border-color: var(--accent-blue);
+        }
+        
+        .header-right {
+            display: flex;
+            align-items: center;
+            gap: 15px;
+        }
+        
+        .crosshair-time {
+            font-family: "Monaco", "Consolas", monospace;
+            font-size: 14px;
+            color: var(--accent-green);
+            background: var(--bg-tertiary);
+            padding: 4px 10px;
+            border-radius: 4px;
+            min-width: 80px;
+            text-align: center;
+        }
+        
+        .status-indicator {
+            display: flex;
+            align-items: center;
+            gap: 6px;
+            font-size: 12px;
+            color: var(--text-secondary);
+        }
+        
+        .status-dot {
+            width: 8px;
+            height: 8px;
+            border-radius: 50%;
+            background: var(--accent-red);
+        }
+        
+        .status-dot.connected {
+            background: var(--accent-green);
+            animation: pulse 2s infinite;
+        }
+        
+        @keyframes pulse {
+            0%, 100% { opacity: 1; }
+            50% { opacity: 0.5; }
+        }
+        
+        .controls {
+            background: var(--bg-secondary);
+            padding: 12px 20px;
+            border-bottom: 1px solid var(--border-color);
+        }
+        
+        .expiry-tabs {
+            display: flex;
+            gap: 8px;
+            margin-bottom: 12px;
+        }
+        
+        .expiry-tab {
+            padding: 5px 14px;
+            border: 1px solid var(--border-color);
+            border-radius: 4px;
+            background: var(--bg-tertiary);
+            color: var(--text-secondary);
+            cursor: pointer;
+            font-size: 12px;
+            transition: all 0.2s ease;
+        }
+        
+        .expiry-tab:hover {
+            background: var(--bg-primary);
+        }
+        
+        .expiry-tab.active {
+            background: var(--accent-green);
+            color: white;
+            border-color: var(--accent-green);
+        }
+        
+        .strikes-section {
+            display: flex;
+            gap: 30px;
+        }
+        
+        .strike-group {
+            flex: 1;
+        }
+        
+        .strike-group-label {
+            font-size: 11px;
+            text-transform: uppercase;
+            color: var(--text-secondary);
+            margin-bottom: 8px;
+            letter-spacing: 0.5px;
+        }
+        
+        .strike-buttons {
+            display: flex;
+            flex-wrap: wrap;
+            gap: 6px;
+        }
+        
+        .strike-btn {
+            padding: 4px 10px;
+            border: 1px solid var(--border-color);
+            border-radius: 4px;
+            background: var(--bg-tertiary);
+            color: var(--text-secondary);
+            cursor: pointer;
+            font-size: 12px;
+            font-family: "Monaco", "Consolas", monospace;
+            transition: all 0.15s ease;
+        }
+        
+        .strike-btn:hover {
+            background: var(--bg-primary);
+        }
+        
+        .strike-btn.active-ce {
+            background: var(--accent-green);
+            color: white;
+            border-color: var(--accent-green);
+        }
+        
+        .strike-btn.active-pe {
+            background: var(--accent-red);
+            color: white;
+            border-color: var(--accent-red);
+        }
+        
+        .atm-btn {
+            background: var(--accent-blue) !important;
+            color: white !important;
+            border-color: var(--accent-blue) !important;
+            font-weight: 600;
+        }
+        
+        .main-content {
+            padding: 15px 20px;
+        }
+        
+        .chart-grid {
+            display: grid;
+            grid-template-columns: 1fr 1fr;
+            gap: 15px;
+        }
+        
+        .chart-container {
+            background: var(--bg-secondary);
+            border: 1px solid var(--border-color);
+            border-radius: 8px;
+            overflow: hidden;
+        }
+        
+        .chart-header {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            padding: 10px 15px;
+            background: var(--bg-tertiary);
+            border-bottom: 1px solid var(--border-color);
+        }
+        
+        .chart-title {
+            font-size: 13px;
+            font-weight: 600;
+            color: var(--text-primary);
+        }
+        
+        .chart-title.ce {
+            color: var(--accent-green);
+        }
+        
+        .chart-title.pe {
+            color: var(--accent-red);
+        }
+        
+        .chart-value {
+            font-family: "Monaco", "Consolas", monospace;
+            font-size: 12px;
+            color: var(--text-secondary);
+        }
+        
+        .chart-box {
+            height: 400px;
+        }
+        
+        /* Highcharts dark theme overrides */
+        .highcharts-background {
+            fill: var(--bg-secondary);
+        }
+        
+        .highcharts-grid-line {
+            stroke: var(--border-color);
+        }
+        
+        .highcharts-axis-line {
+            stroke: var(--border-color);
+        }
+        
+        .highcharts-tick {
+            stroke: var(--border-color);
+        }
+        
+        .highcharts-crosshair {
+            stroke: var(--accent-blue);
+            stroke-width: 1px;
+        }
+        
+        /* Loading overlay */
+        .loading-overlay {
+            position: fixed;
+            top: 0;
+            left: 0;
+            right: 0;
+            bottom: 0;
+            background: rgba(13, 17, 23, 0.9);
+            display: flex;
+            justify-content: center;
+            align-items: center;
+            z-index: 9999;
+        }
+        
+        .loading-spinner {
+            width: 40px;
+            height: 40px;
+            border: 3px solid var(--border-color);
+            border-top-color: var(--accent-blue);
+            border-radius: 50%;
+            animation: spin 1s linear infinite;
+        }
+        
+        @keyframes spin {
+            to { transform: rotate(360deg); }
+        }
+        
+        .hidden {
+            display: none !important;
+        }
+        
+        /* Responsive */
+        @media (max-width: 1200px) {
+            .chart-grid {
+                grid-template-columns: 1fr;
+            }
+        }
+    </style>
+</head>
+<body>
+    <div id="loadingOverlay" class="loading-overlay">
+        <div class="loading-spinner"></div>
+    </div>
+    
+    <header class="header">
+        <div class="header-left">
+            <span class="logo">📊 Normalized Options</span>
+            <div class="index-tabs">
+                <button class="index-tab active" data-index="NIFTY">NIFTY</button>
+                <button class="index-tab" data-index="BANKNIFTY">BANKNIFTY</button>
+                <button class="index-tab" data-index="SENSEX">SENSEX</button>
+            </div>
+        </div>
+        <div class="header-right">
+            <span class="crosshair-time" id="crosshairTime">--:--</span>
+            <div class="status-indicator">
+                <span class="status-dot" id="statusDot"></span>
+                <span id="statusText">Disconnected</span>
+            </div>
+        </div>
+    </header>
+    
+    <div class="controls">
+        <div class="expiry-tabs" id="expiryTabs">
+            <!-- Populated by JS -->
+        </div>
+        <div class="strikes-section">
+            <div class="strike-group">
+                <div class="strike-group-label">CALL Strikes</div>
+                <div class="strike-buttons" id="ceStrikes">
+                    <!-- Populated by JS -->
+                </div>
+            </div>
+            <div class="strike-group">
+                <div class="strike-group-label">PUT Strikes</div>
+                <div class="strike-buttons" id="peStrikes">
+                    <!-- Populated by JS -->
+                </div>
+            </div>
+        </div>
+    </div>
+    
+    <main class="main-content">
+        <div class="chart-grid">
+            <!-- Row 0: IV Normalized (diff→cumsum→norm) -->
+            <div class="chart-container">
+                <div class="chart-header">
+                    <span class="chart-title ce">CE - IV (Normalized)</span>
+                    <span class="chart-value" id="val-ce-iv-raw">--</span>
+                </div>
+                <div class="chart-box" id="chart-ce-iv-raw"></div>
+            </div>
+            <div class="chart-container">
+                <div class="chart-header">
+                    <span class="chart-title pe">PE - IV (Normalized)</span>
+                    <span class="chart-value" id="val-pe-iv-raw">--</span>
+                </div>
+                <div class="chart-box" id="chart-pe-iv-raw"></div>
+            </div>
+            
+            <!-- Row 1: OI Diff CumSum -->
+            <div class="chart-container">
+                <div class="chart-header">
+                    <span class="chart-title ce">CE - OI Diff CumSum</span>
+                    <span class="chart-value" id="val-ce-oi">--</span>
+                </div>
+                <div class="chart-box" id="chart-ce-oi"></div>
+            </div>
+            <div class="chart-container">
+                <div class="chart-header">
+                    <span class="chart-title pe">PE - OI Diff CumSum</span>
+                    <span class="chart-value" id="val-pe-oi">--</span>
+                </div>
+                <div class="chart-box" id="chart-pe-oi"></div>
+            </div>
+            
+            <!-- Row 3: TimeValue × Volume CumSum -->
+            <div class="chart-container">
+                <div class="chart-header">
+                    <span class="chart-title ce">CE - TimeValue×Vol CumSum</span>
+                    <span class="chart-value" id="val-ce-tvv">--</span>
+                </div>
+                <div class="chart-box" id="chart-ce-tvv"></div>
+            </div>
+            <div class="chart-container">
+                <div class="chart-header">
+                    <span class="chart-title pe">PE - TimeValue×Vol CumSum</span>
+                    <span class="chart-value" id="val-pe-tvv">--</span>
+                </div>
+                <div class="chart-box" id="chart-pe-tvv"></div>
+            </div>
+            
+            <!-- Row 4: TimeValue Diff CumSum -->
+            <div class="chart-container">
+                <div class="chart-header">
+                    <span class="chart-title ce">CE - TimeValue Diff CumSum</span>
+                    <span class="chart-value" id="val-ce-tv">--</span>
+                </div>
+                <div class="chart-box" id="chart-ce-tv"></div>
+            </div>
+            <div class="chart-container">
+                <div class="chart-header">
+                    <span class="chart-title pe">PE - TimeValue Diff CumSum</span>
+                    <span class="chart-value" id="val-pe-tv">--</span>
+                </div>
+                <div class="chart-box" id="chart-pe-tv"></div>
+            </div>
+        </div>
+    </main>
+    
+    <script src="/static/js/dashboard.js"></script>
+</body>
+</html>

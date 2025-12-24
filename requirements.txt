@@ -1,0 +1,7 @@
+fastapi
+uvicorn[standard]
+aiohttp
+numpy
+pandas
+polars
+websocket-client
