@@ -28,7 +28,13 @@ NORMALIZE_COLUMNS = (
     "oi_diff_cumsum",
     "timevalue_vol_prod_cumsum",
     "timevalue_diff_cumsum",
+    "delta_diff_cumsum",
+    "theta_diff_cumsum",
+    "vega_diff_cumsum",
 )
+
+# EMA period for smoothing (12 periods = ~2 min for 10s data)
+EMA_PERIOD = 12
 
 # Raw columns (not normalized, just aligned) - REMOVED, will normalize IV instead
 RAW_COLUMNS = ()
@@ -334,6 +340,132 @@ def _zscore_incremental_numpy(
     return out
 
 
+def _calculate_ema(data: np.ndarray, period: int = EMA_PERIOD) -> np.ndarray:
+    """
+    Calculate Exponential Moving Average (EMA) for smoothing.
+    
+    EMA formula:
+    - multiplier = 2 / (period + 1)
+    - EMA_today = (value_today * multiplier) + (EMA_yesterday * (1 - multiplier))
+    
+    Args:
+        data: Input numpy array (normalized values)
+        period: EMA period (default 12 = ~2 min for 10s data)
+    
+    Returns:
+        EMA smoothed array
+    """
+    n = len(data)
+    if n == 0:
+        return data
+    
+    ema = np.zeros(n, dtype=np.float32)
+    multiplier = 2.0 / (period + 1)
+    
+    # Handle NaN - forward fill
+    filled = np.copy(data)
+    mask = np.isnan(filled)
+    if mask.any():
+        idx = np.where(~mask, np.arange(n), 0)
+        np.maximum.accumulate(idx, out=idx)
+        filled = filled[idx]
+        filled = np.where(np.isnan(filled), 0.0, filled)
+    
+    # First value = first data point
+    ema[0] = filled[0]
+    
+    # Calculate EMA for rest
+    for i in range(1, n):
+        ema[i] = (filled[i] * multiplier) + (ema[i-1] * (1 - multiplier))
+    
+    # Round to 2 decimals
+    return np.round(ema, 2).astype(np.float32)
+
+
+def _add_ema_columns(norm_data: Dict[str, np.ndarray]) -> Dict[str, np.ndarray]:
+    """
+    Add EMA smoothed columns for all normalized data.
+    
+    For each column like 'DEC24_24000CE_iv_diff_cumsum',
+    creates 'DEC24_24000CE_iv_diff_cumsum_ema'
+    """
+    ema_columns = {}
+    
+    for col_name, values in norm_data.items():
+        # Skip if already an EMA column or vega_skew
+        if col_name.endswith('_ema') or '_vega_skew' in col_name:
+            continue
+        
+        # Calculate EMA
+        ema_values = _calculate_ema(values)
+        ema_col_name = f"{col_name}_ema"
+        ema_columns[ema_col_name] = ema_values
+    
+    # Merge original + EMA columns
+    result = dict(norm_data)
+    result.update(ema_columns)
+    
+    return result
+
+
+def _add_vega_skew_columns(norm_data: Dict[str, np.ndarray]) -> Dict[str, np.ndarray]:
+    """
+    Calculate Vega Skew = CE Vega - PE Vega for each strike.
+    
+    For each strike, finds matching CE and PE vega columns and calculates difference.
+    Creates columns like 'DEC24_24000_vega_skew' (without CE/PE suffix)
+    """
+    import re
+    
+    # Find all CE vega columns
+    ce_vega_cols = {}
+    pe_vega_cols = {}
+    
+    for col_name in norm_data.keys():
+        # Match pattern: EXPIRY_STRIKE_CE/PE_vega_diff_cumsum (not _ema)
+        match = re.match(r'^([A-Z]{3}\d{2})_(\d+)(CE|PE)_vega_diff_cumsum$', col_name)
+        if match:
+            expiry = match.group(1)
+            strike = match.group(2)
+            opt_type = match.group(3)
+            key = f"{expiry}_{strike}"
+            
+            if opt_type == 'CE':
+                ce_vega_cols[key] = col_name
+            else:
+                pe_vega_cols[key] = col_name
+    
+    # Calculate skew for matching pairs
+    skew_columns = {}
+    
+    for key in ce_vega_cols:
+        if key in pe_vega_cols:
+            ce_col = ce_vega_cols[key]
+            pe_col = pe_vega_cols[key]
+            
+            ce_values = norm_data[ce_col]
+            pe_values = norm_data[pe_col]
+            
+            # Simple difference: CE Vega - PE Vega
+            skew = ce_values - pe_values
+            
+            # Round to 2 decimals
+            skew = np.round(skew, 2).astype(np.float32)
+            
+            skew_col_name = f"{key}_vega_skew"
+            skew_columns[skew_col_name] = skew
+            
+            # Also create EMA version
+            skew_ema = _calculate_ema(skew)
+            skew_columns[f"{skew_col_name}_ema"] = skew_ema
+    
+    # Merge with original data
+    result = dict(norm_data)
+    result.update(skew_columns)
+    
+    return result
+
+
 def normalize_index_options(index_name: str) -> Dict[str, np.ndarray]:
     """
     HYBRID Normalization for all options of a single index.
@@ -492,16 +624,24 @@ def normalize_all_index_options() -> Dict[str, Dict[str, np.ndarray]]:
 
 def get_normalized_index_data(index_name: str) -> Dict[str, np.ndarray]:
     """
-    Get normalized data for an index.
+    Get normalized data for an index WITH EMA smoothed columns.
     Returns cached data if available, otherwise computes it.
+    
+    Each original column gets an _ema version for smooth display.
     """
     state_key = f"{index_name}_COMBINED"
     calc_state = get_calculation_state(state_key)
     
     if calc_state.get("norm"):
-        return calc_state["norm"]
+        norm_data = calc_state["norm"]
+    else:
+        norm_data = normalize_index_options(index_name)
     
-    return normalize_index_options(index_name)
+    # Add EMA columns
+    # Add EMA columns first, then vega skew
+    result = _add_ema_columns(norm_data)
+    result = _add_vega_skew_columns(result)
+    return result
 
 
 __all__ = [
@@ -510,4 +650,5 @@ __all__ = [
     "get_normalized_index_data",
     "NORMALIZE_COLUMNS",
     "INDEX_NAMES",
+    "EMA_PERIOD",
 ]

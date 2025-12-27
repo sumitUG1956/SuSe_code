@@ -3,11 +3,31 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <meta http-equiv="Cache-Control" content="no-cache, no-store, must-revalidate">
+    <meta http-equiv="Pragma" content="no-cache">
+    <meta http-equiv="Expires" content="0">
     <title>Algo Normalized Options Dashboard</title>
     
     <!-- Highcharts -->
     <script src="https://code.highcharts.com/stock/highstock.js"></script>
     <script src="https://code.highcharts.com/stock/modules/exporting.js"></script>
+    
+    <!-- Auth Check - Runs before page renders -->
+    <script>
+        (function() {
+            // Prevent back button after logout
+            window.history.pushState(null, '', window.location.href);
+            window.onpopstate = function() {
+                window.history.pushState(null, '', window.location.href);
+            };
+            
+            // Check authentication
+            const token = localStorage.getItem('authToken') || sessionStorage.getItem('authToken');
+            if (!token) {
+                window.location.replace('/login');
+            }
+        })();
+    </script>
     
     <style>
         :root {
@@ -91,6 +111,24 @@
             display: flex;
             align-items: center;
             gap: 15px;
+        }
+        
+        .display-mode-btn {
+            padding: 6px 12px;
+            background: var(--bg-tertiary);
+            border: 1px solid var(--border-color);
+            border-radius: 6px;
+            color: var(--accent-blue);
+            font-size: 12px;
+            font-weight: 500;
+            cursor: pointer;
+            transition: all 0.2s ease;
+        }
+        
+        .display-mode-btn:hover {
+            background: var(--accent-blue);
+            color: white;
+            border-color: var(--accent-blue);
         }
         
         .crosshair-time {
@@ -213,6 +251,17 @@
             border-color: var(--accent-red);
         }
         
+        .strike-btn.loading {
+            opacity: 0.7;
+            cursor: wait;
+            animation: pulse-loading 1s ease-in-out infinite;
+        }
+        
+        @keyframes pulse-loading {
+            0%, 100% { opacity: 0.7; }
+            50% { opacity: 0.4; }
+        }
+        
         .atm-btn {
             background: var(--accent-blue) !important;
             color: white !important;
@@ -237,6 +286,10 @@
             overflow: hidden;
         }
         
+        .chart-container.chart-full-width {
+            grid-column: 1 / -1;
+        }
+        
         .chart-header {
             display: flex;
             justify-content: space-between;
@@ -258,6 +311,10 @@
         
         .chart-title.pe {
             color: var(--accent-red);
+        }
+        
+        .chart-title.skew {
+            color: var(--accent-blue);
         }
         
         .chart-value {
@@ -323,10 +380,67 @@
             display: none !important;
         }
         
+        /* User menu */
+        .user-menu {
+            position: relative;
+            display: flex;
+            align-items: center;
+            gap: 10px;
+        }
+        
+        .user-avatar {
+            width: 32px;
+            height: 32px;
+            border-radius: 50%;
+            background: linear-gradient(135deg, #58a6ff 0%, #a371f7 100%);
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            font-size: 14px;
+            font-weight: 600;
+            color: white;
+            cursor: pointer;
+        }
+        
+        .user-name {
+            font-size: 13px;
+            color: var(--text-secondary);
+            max-width: 120px;
+            overflow: hidden;
+            text-overflow: ellipsis;
+            white-space: nowrap;
+        }
+        
+        .logout-btn {
+            padding: 6px 12px;
+            background: transparent;
+            border: 1px solid var(--border-color);
+            border-radius: 6px;
+            color: var(--text-secondary);
+            font-size: 12px;
+            cursor: pointer;
+            transition: all 0.2s ease;
+            display: flex;
+            align-items: center;
+            gap: 6px;
+        }
+        
+        .logout-btn:hover {
+            background: rgba(248, 81, 73, 0.1);
+            border-color: var(--accent-red);
+            color: var(--accent-red);
+        }
+        
         /* Responsive */
         @media (max-width: 1200px) {
             .chart-grid {
                 grid-template-columns: 1fr;
+            }
+        }
+        
+        @media (max-width: 768px) {
+            .user-name {
+                display: none;
             }
         }
     </style>
@@ -346,10 +460,23 @@
             </div>
         </div>
         <div class="header-right">
+            <button class="display-mode-btn" id="displayModeBtn" onclick="toggleDisplayMode()" title="Showing EMA smoothed data (click for raw)">📈 Smooth</button>
             <span class="crosshair-time" id="crosshairTime">--:--</span>
             <div class="status-indicator">
                 <span class="status-dot" id="statusDot"></span>
                 <span id="statusText">Disconnected</span>
+            </div>
+            <div class="user-menu">
+                <div class="user-avatar" id="userAvatar">U</div>
+                <span class="user-name" id="userName">User</span>
+                <button class="logout-btn" id="logoutBtn" title="Logout">
+                    <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                        <path d="M9 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h4"></path>
+                        <polyline points="16 17 21 12 16 7"></polyline>
+                        <line x1="21" y1="12" x2="9" y2="12"></line>
+                    </svg>
+                    Logout
+                </button>
             </div>
         </div>
     </header>
@@ -376,68 +503,68 @@
     
     <main class="main-content">
         <div class="chart-grid">
-            <!-- Row 0: IV Normalized (diff→cumsum→norm) -->
+            <!-- Row 1: Volume -->
             <div class="chart-container">
                 <div class="chart-header">
-                    <span class="chart-title ce">CE - IV (Normalized)</span>
-                    <span class="chart-value" id="val-ce-iv-raw">--</span>
-                </div>
-                <div class="chart-box" id="chart-ce-iv-raw"></div>
-            </div>
-            <div class="chart-container">
-                <div class="chart-header">
-                    <span class="chart-title pe">PE - IV (Normalized)</span>
-                    <span class="chart-value" id="val-pe-iv-raw">--</span>
-                </div>
-                <div class="chart-box" id="chart-pe-iv-raw"></div>
-            </div>
-            
-            <!-- Row 1: OI Diff CumSum -->
-            <div class="chart-container">
-                <div class="chart-header">
-                    <span class="chart-title ce">CE - OI Diff CumSum</span>
-                    <span class="chart-value" id="val-ce-oi">--</span>
-                </div>
-                <div class="chart-box" id="chart-ce-oi"></div>
-            </div>
-            <div class="chart-container">
-                <div class="chart-header">
-                    <span class="chart-title pe">PE - OI Diff CumSum</span>
-                    <span class="chart-value" id="val-pe-oi">--</span>
-                </div>
-                <div class="chart-box" id="chart-pe-oi"></div>
-            </div>
-            
-            <!-- Row 3: TimeValue × Volume CumSum -->
-            <div class="chart-container">
-                <div class="chart-header">
-                    <span class="chart-title ce">CE - TimeValue×Vol CumSum</span>
+                    <span class="chart-title ce">CE - Volume</span>
                     <span class="chart-value" id="val-ce-tvv">--</span>
                 </div>
                 <div class="chart-box" id="chart-ce-tvv"></div>
             </div>
             <div class="chart-container">
                 <div class="chart-header">
-                    <span class="chart-title pe">PE - TimeValue×Vol CumSum</span>
+                    <span class="chart-title pe">PE - Volume</span>
                     <span class="chart-value" id="val-pe-tvv">--</span>
                 </div>
                 <div class="chart-box" id="chart-pe-tvv"></div>
             </div>
             
-            <!-- Row 4: TimeValue Diff CumSum -->
+            <!-- Row 2: Premium Decay -->
             <div class="chart-container">
                 <div class="chart-header">
-                    <span class="chart-title ce">CE - TimeValue Diff CumSum</span>
+                    <span class="chart-title ce">CE - Premium Decay</span>
                     <span class="chart-value" id="val-ce-tv">--</span>
                 </div>
                 <div class="chart-box" id="chart-ce-tv"></div>
             </div>
             <div class="chart-container">
                 <div class="chart-header">
-                    <span class="chart-title pe">PE - TimeValue Diff CumSum</span>
+                    <span class="chart-title pe">PE - Premium Decay</span>
                     <span class="chart-value" id="val-pe-tv">--</span>
                 </div>
                 <div class="chart-box" id="chart-pe-tv"></div>
+            </div>
+            
+            <!-- Row 3: Implied Volatility -->
+            <div class="chart-container">
+                <div class="chart-header">
+                    <span class="chart-title ce">CE - Implied Volatility</span>
+                    <span class="chart-value" id="val-ce-iv">--</span>
+                </div>
+                <div class="chart-box" id="chart-ce-iv"></div>
+            </div>
+            <div class="chart-container">
+                <div class="chart-header">
+                    <span class="chart-title pe">PE - Implied Volatility</span>
+                    <span class="chart-value" id="val-pe-iv">--</span>
+                </div>
+                <div class="chart-box" id="chart-pe-iv"></div>
+            </div>
+            
+            <!-- Row 4: Open Interest -->
+            <div class="chart-container">
+                <div class="chart-header">
+                    <span class="chart-title ce">CE - Open Interest</span>
+                    <span class="chart-value" id="val-ce-oi">--</span>
+                </div>
+                <div class="chart-box" id="chart-ce-oi"></div>
+            </div>
+            <div class="chart-container">
+                <div class="chart-header">
+                    <span class="chart-title pe">PE - Open Interest</span>
+                    <span class="chart-value" id="val-pe-oi">--</span>
+                </div>
+                <div class="chart-box" id="chart-pe-oi"></div>
             </div>
         </div>
     </main>

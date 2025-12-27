@@ -11,7 +11,7 @@ from live_updates import publish as publish_live_update
 
 IST = ZoneInfo("Asia/Kolkata")
 ISO_TIMESTAMP_FORMAT = "%Y-%m-%dT%H:%M:%S%z"
-DEFAULT_NUMPY_CAPACITY = 120_000
+DEFAULT_NUMPY_CAPACITY = 3_000  # ~1 day of 10s candles (2250) + buffer
 
 
 def _parse_timestamp_ms(value):
