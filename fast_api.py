@@ -1,13 +1,17 @@
 #!/usr/bin/env python3
 
 import asyncio
+import signal
+import sys
 import json
+import re
 from pathlib import Path
-from typing import Set
+from typing import Set, Optional
 
-from fastapi import FastAPI, HTTPException, Response, WebSocket, WebSocketDisconnect
+from fastapi import FastAPI, HTTPException, Response, WebSocket, WebSocketDisconnect, Request, Header, Depends
 from fastapi.staticfiles import StaticFiles
-from fastapi.responses import HTMLResponse, FileResponse
+from fastapi.responses import HTMLResponse, FileResponse, RedirectResponse
+from pydantic import BaseModel, EmailStr
 import uvicorn
 from starlette.concurrency import run_in_threadpool
 
@@ -20,6 +24,7 @@ import pandas as pd
 import numpy as np
 from logger import log_error, log_info
 from live_updates import subscribe, unsubscribe
+from auth import register_user, login_user, verify_auth_token
 
 # WebSocket connections for normalized data
 _normalized_ws_clients: Set[WebSocket] = set()
@@ -27,6 +32,21 @@ _normalized_ws_subscriptions: dict = {}  # ws -> index_name
 
 candle_fetcher = None
 _fetcher_lock = asyncio.Lock()
+
+
+# ---- Pydantic Models for Auth -----------------------------------------------
+
+class RegisterRequest(BaseModel):
+    first_name: str
+    last_name: str
+    email: str
+    phone: str
+    password: str
+
+
+class LoginRequest(BaseModel):
+    email: str
+    password: str
 
 
 def refresh_payload_and_report():
@@ -61,11 +81,79 @@ async def chrome_devtools():
     return Response(content="{}", media_type="application/json")
 
 
-# ---- Dashboard Route --------------------------------------------------------
+# ---- Authentication Routes --------------------------------------------------
 
 @app.get("/", response_class=HTMLResponse)
+async def root():
+    """Redirect to login page."""
+    return RedirectResponse(url="/login", status_code=302)
+
+
+@app.get("/login", response_class=HTMLResponse)
+async def serve_login():
+    """Serve the login page."""
+    html_path = BASE_DIR / "templates" / "login.html"
+    if not html_path.exists():
+        raise HTTPException(status_code=404, detail="Login page not found")
+    return FileResponse(html_path)
+
+
+@app.get("/register", response_class=HTMLResponse)
+async def serve_register():
+    """Serve the registration page."""
+    html_path = BASE_DIR / "templates" / "register.html"
+    if not html_path.exists():
+        raise HTTPException(status_code=404, detail="Register page not found")
+    return FileResponse(html_path)
+
+
+@app.post("/api/auth/register")
+async def api_register(req: RegisterRequest):
+    """Register a new user."""
+    success, message, user_data = register_user(
+        first_name=req.first_name,
+        last_name=req.last_name,
+        email=req.email,
+        phone=req.phone,
+        password=req.password
+    )
+    
+    if not success:
+        raise HTTPException(status_code=400, detail=message)
+    
+    return {"message": message, "user": user_data}
+
+
+@app.post("/api/auth/login")
+async def api_login(req: LoginRequest):
+    """Authenticate user and return token."""
+    success, message, data = login_user(req.email, req.password)
+    
+    if not success:
+        raise HTTPException(status_code=401, detail=message)
+    
+    return data
+
+
+@app.get("/api/auth/verify")
+async def api_verify_token(authorization: Optional[str] = Header(None)):
+    """Verify authentication token."""
+    if not authorization:
+        raise HTTPException(status_code=401, detail="No token provided")
+    
+    is_valid, user_data = verify_auth_token(authorization)
+    
+    if not is_valid:
+        raise HTTPException(status_code=401, detail="Invalid or expired token")
+    
+    return {"valid": True, "user": user_data}
+
+
+# ---- Protected Dashboard Route ----------------------------------------------
+
+@app.get("/dashboard", response_class=HTMLResponse)
 async def serve_dashboard():
-    """Serve the dashboard HTML page."""
+    """Serve the dashboard HTML page (requires authentication via JS)."""
     html_path = BASE_DIR / "templates" / "dashboard.html"
     if not html_path.exists():
         raise HTTPException(status_code=404, detail="Dashboard not found")
@@ -88,9 +176,36 @@ async def on_startup():
 @app.on_event("shutdown")
 async def on_shutdown():
     global candle_fetcher
+    log_info("[shutdown] Starting graceful shutdown...")
+    
+    # Stop candle fetcher first
     if candle_fetcher is not None:
-        await candle_fetcher.stop()
+        try:
+            await asyncio.wait_for(candle_fetcher.stop(), timeout=5.0)
+        except asyncio.TimeoutError:
+            log_info("[shutdown] CandleFetcher stop timed out")
+        except Exception as e:
+            log_error(f"[shutdown] CandleFetcher stop error: {e}")
         candle_fetcher = None
+    
+    # Cancel all pending tasks except current
+    tasks = [t for t in asyncio.all_tasks() if t is not asyncio.current_task()]
+    if tasks:
+        log_info(f"[shutdown] Cancelling {len(tasks)} pending tasks...")
+        for task in tasks:
+            task.cancel()
+        # Wait for cancellation with timeout
+        await asyncio.gather(*tasks, return_exceptions=True)
+    
+    # Close all WebSocket connections
+    for ws in list(_normalized_ws_clients):
+        try:
+            await ws.close()
+        except Exception:
+            pass
+    _normalized_ws_clients.clear()
+    _normalized_ws_subscriptions.clear()
+    
     log_info("[shutdown] FastAPI app shutdown complete")
 
 
@@ -269,11 +384,50 @@ async def get_payload_route():
 
 # ---- Normalized Data API ----------------------------------------------------
 
+def _filter_by_expiry(normalized: dict, expiry: str = None) -> tuple:
+    """
+    Filter normalized data by expiry.
+    Returns: (filtered_data, available_expiries)
+    """
+    if not normalized:
+        return {}, []
+    
+    # Extract all available expiries from column names
+    available_expiries = set()
+    for col_name in normalized.keys():
+        # Column format: DEC24_24000CE_iv_diff_cumsum
+        if "_" in col_name:
+            exp = col_name.split("_")[0]
+            if exp and len(exp) >= 4 and exp[:3].isalpha():
+                available_expiries.add(exp)
+    
+    available_expiries = sorted(available_expiries)
+    
+    # If no expiry specified or invalid, return all
+    if not expiry or expiry not in available_expiries:
+        return normalized, available_expiries
+    
+    # Filter only columns matching the expiry
+    filtered = {}
+    for col_name, values in normalized.items():
+        if col_name.startswith(f"{expiry}_"):
+            filtered[col_name] = values
+    
+    return filtered, available_expiries
+
+
 @app.get("/api/normalized/{index_name}")
-async def get_normalized_data(index_name: str):
+async def get_normalized_data(index_name: str, expiry: str = None, strikes: str = None, smooth: bool = True):
     """
     Get normalized options data for an index.
-    Returns: {normalized: {col_name: [values...]}, time_seconds: [...], spot_price: float}
+    
+    Args:
+        index_name: NIFTY, BANKNIFTY, or SENSEX
+        expiry: Optional expiry filter (e.g., "DEC24", "JAN25"). If not provided, returns all expiries.
+        strikes: Optional comma-separated strike prices (e.g., "24000,24100,24200"). If not provided, returns all strikes.
+        smooth: If True, returns EMA smoothed data (_ema columns). If False, returns raw data. Default True.
+    
+    Returns: {normalized: {col_name: [values...]}, time_seconds: [...], spot_price: float, available_expiries: [...], current_expiry: str, available_strikes: [...]}
     """
     index_name = index_name.upper()
     if index_name not in INDEX_NAMES:
@@ -284,6 +438,55 @@ async def get_normalized_data(index_name: str):
     
     if not normalized:
         raise HTTPException(status_code=404, detail=f"No data for {index_name}")
+    
+    # Filter by expiry if specified
+    expiry_upper = expiry.upper() if expiry else None
+    filtered_data, available_expiries = _filter_by_expiry(normalized, expiry_upper)
+    
+    # Filter by smooth mode - keep only EMA or only raw columns
+    if smooth:
+        # Keep only _ema columns (smooth mode)
+        filtered_data = {k: v for k, v in filtered_data.items() if k.endswith('_ema')}
+    else:
+        # Keep only non-_ema columns (raw mode)
+        filtered_data = {k: v for k, v in filtered_data.items() if not k.endswith('_ema')}
+    
+    # Parse all available strikes from filtered data
+    all_strikes = set()
+    for col_name in filtered_data.keys():
+        # Match standard columns: EXPIRY_STRIKE_CE/PE_metric
+        match = re.match(r'^([A-Z]{3}\d{2})_(\d+)(CE|PE)_', col_name)
+        if match:
+            all_strikes.add(int(match.group(2)))
+        else:
+            # Also match skew columns: EXPIRY_STRIKE_vega_skew
+            match_skew = re.match(r'^([A-Z]{3}\d{2})_(\d+)_vega_skew', col_name)
+            if match_skew:
+                all_strikes.add(int(match_skew.group(2)))
+    available_strikes = sorted(all_strikes)
+    
+    # Filter by strikes if specified (lazy loading)
+    if strikes:
+        requested_strikes = set(int(s.strip()) for s in strikes.split(',') if s.strip().isdigit())
+        filtered_by_strikes = {}
+        for col_name, values in filtered_data.items():
+            # Match standard CE/PE columns
+            match = re.match(r'^([A-Z]{3}\d{2})_(\d+)(CE|PE)_', col_name)
+            if match:
+                strike = int(match.group(2))
+                if strike in requested_strikes:
+                    filtered_by_strikes[col_name] = values
+            else:
+                # Match skew columns
+                match_skew = re.match(r'^([A-Z]{3}\d{2})_(\d+)_vega_skew', col_name)
+                if match_skew:
+                    strike = int(match_skew.group(2))
+                    if strike in requested_strikes:
+                        filtered_by_strikes[col_name] = values
+                else:
+                    # Keep non-strike columns
+                    filtered_by_strikes[col_name] = values
+        filtered_data = filtered_by_strikes
     
     # Get time_seconds from spot
     spot_snapshot = get_numpy_candle_snapshot(index_name)
@@ -303,7 +506,7 @@ async def get_normalized_data(index_name: str):
     
     # Convert numpy arrays to lists with rounding
     normalized_json = {}
-    for col_name, values in normalized.items():
+    for col_name, values in filtered_data.items():
         if isinstance(values, np.ndarray):
             # Replace nan with None and round to 2 decimal places
             clean = [None if np.isnan(v) else round(float(v), 2) for v in values]
@@ -316,6 +519,10 @@ async def get_normalized_data(index_name: str):
         "normalized": normalized_json,
         "time_seconds": time_seconds,
         "spot_price": spot_price,
+        "available_expiries": available_expiries,
+        "available_strikes": available_strikes,
+        "smooth": smooth,
+        "current_expiry": expiry_upper if expiry_upper in available_expiries else (available_expiries[0] if available_expiries else None),
     }
 
 
@@ -326,8 +533,8 @@ async def normalized_ws(websocket: WebSocket):
     """
     WebSocket endpoint for real-time normalized data updates.
     
-    Client sends: {"action": "subscribe", "index": "NIFTY"}
-    Server sends: {"type": "update", "index": "NIFTY", "normalized": {...}, ...}
+    Client sends: {"action": "subscribe", "index": "NIFTY", "expiry": "DEC24", "strikes": [24000, 24100], "smooth": true}
+    Server sends: {"type": "update", "index": "NIFTY", "expiry": "DEC24", "normalized": {...}, ...}
     """
     await websocket.accept()
     _normalized_ws_clients.add(websocket)
@@ -338,13 +545,53 @@ async def normalized_ws(websocket: WebSocket):
             
             if data.get("action") == "subscribe":
                 index_name = data.get("index", "NIFTY").upper()
+                expiry = data.get("expiry", "").upper() if data.get("expiry") else None
+                strikes = data.get("strikes", [])  # List of strike prices to subscribe to
+                smooth = data.get("smooth", True)  # True = EMA, False = Raw
+                
                 if index_name in INDEX_NAMES:
-                    _normalized_ws_subscriptions[websocket] = index_name
-                    log_info(f"[WS] Client subscribed to {index_name}")
+                    _normalized_ws_subscriptions[websocket] = {
+                        "index": index_name, 
+                        "expiry": expiry,
+                        "strikes": set(strikes) if strikes else None,  # None means all strikes
+                        "smooth": smooth  # Store smooth preference
+                    }
+                    log_info(f"[WS] Client subscribed to {index_name} expiry={expiry} strikes={strikes or 'all'} smooth={smooth}")
                     
                     # Send current data immediately
                     normalized = await run_in_threadpool(get_normalized_index_data, index_name)
                     if normalized:
+                        # Filter by expiry
+                        filtered_data, available_expiries = _filter_by_expiry(normalized, expiry)
+                        
+                        # Filter by smooth mode - keep only EMA or only raw columns
+                        if smooth:
+                            filtered_data = {k: v for k, v in filtered_data.items() if k.endswith('_ema')}
+                        else:
+                            filtered_data = {k: v for k, v in filtered_data.items() if not k.endswith('_ema')}
+                        
+                        # Parse available strikes
+                        all_strikes = set()
+                        for col_name in filtered_data.keys():
+                            match = re.match(r'^([A-Z]{3}\d{2})_(\d+)(CE|PE)_', col_name)
+                            if match:
+                                all_strikes.add(int(match.group(2)))
+                        available_strikes = sorted(all_strikes)
+                        
+                        # Filter by strikes if specified
+                        if strikes:
+                            requested_strikes = set(strikes)
+                            filtered_by_strikes = {}
+                            for col_name, values in filtered_data.items():
+                                match = re.match(r'^([A-Z]{3}\d{2})_(\d+)(CE|PE)_', col_name)
+                                if match:
+                                    strike = int(match.group(2))
+                                    if strike in requested_strikes:
+                                        filtered_by_strikes[col_name] = values
+                                else:
+                                    filtered_by_strikes[col_name] = values
+                            filtered_data = filtered_by_strikes
+                        
                         spot_snapshot = get_numpy_candle_snapshot(index_name)
                         time_seconds = []
                         spot_price = None
@@ -359,7 +606,7 @@ async def normalized_ws(websocket: WebSocket):
                                 spot_price = float(avg[size - 1]) if not np.isnan(avg[size - 1]) else None
                         
                         normalized_json = {}
-                        for col_name, values in normalized.items():
+                        for col_name, values in filtered_data.items():
                             if isinstance(values, np.ndarray):
                                 clean = [None if np.isnan(v) else float(v) for v in values]
                                 normalized_json[col_name] = clean
@@ -369,9 +616,13 @@ async def normalized_ws(websocket: WebSocket):
                         await websocket.send_json({
                             "type": "update",
                             "index": index_name,
+                            "expiry": expiry if expiry in available_expiries else (available_expiries[0] if available_expiries else None),
+                            "available_expiries": available_expiries,
+                            "available_strikes": available_strikes,
                             "normalized": normalized_json,
                             "time_seconds": time_seconds,
                             "spot_price": spot_price,
+                            "smooth": smooth,
                         })
     
     except WebSocketDisconnect:
@@ -409,30 +660,91 @@ async def broadcast_normalized_update(index_name: str):
         if avg is not None and size > 0:
             spot_price = float(avg[size - 1]) if not np.isnan(avg[size - 1]) else None
     
-    normalized_json = {}
-    for col_name, values in normalized.items():
-        if isinstance(values, np.ndarray):
-            clean = [None if np.isnan(v) else float(v) for v in values]
-            normalized_json[col_name] = clean
-        else:
-            normalized_json[col_name] = values
-    
-    message = {
-        "type": "update",
-        "index": index_name,
-        "normalized": normalized_json,
-        "time_seconds": time_seconds,
-        "spot_price": spot_price,
-    }
-    
-    # Send to subscribed clients
+    # Send to subscribed clients (with their specific expiry and strikes filter)
     disconnected = []
     for ws in _normalized_ws_clients:
-        if _normalized_ws_subscriptions.get(ws) == index_name:
-            try:
-                await ws.send_json(message)
-            except Exception:
-                disconnected.append(ws)
+        sub = _normalized_ws_subscriptions.get(ws)
+        if not sub:
+            continue
+        
+        # Check if subscription matches this index
+        sub_index = sub.get("index") if isinstance(sub, dict) else sub
+        if sub_index != index_name:
+            continue
+        
+        # Get expiry filter for this client
+        sub_expiry = sub.get("expiry") if isinstance(sub, dict) else None
+        sub_strikes = sub.get("strikes") if isinstance(sub, dict) else None
+        sub_smooth = sub.get("smooth", True) if isinstance(sub, dict) else True
+        
+        # Filter data by expiry
+        filtered_data, available_expiries = _filter_by_expiry(normalized, sub_expiry)
+        
+        # Parse all available strikes (including skew columns)
+        all_strikes = set()
+        for col_name in filtered_data.keys():
+            match = re.match(r'^([A-Z]{3}\d{2})_(\d+)(CE|PE)_', col_name)
+            if match:
+                all_strikes.add(int(match.group(2)))
+            else:
+                match_skew = re.match(r'^([A-Z]{3}\d{2})_(\d+)_vega_skew', col_name)
+                if match_skew:
+                    all_strikes.add(int(match_skew.group(2)))
+        available_strikes = sorted(all_strikes)
+        
+        # Filter by strikes if client has subscribed to specific strikes
+        if sub_strikes:
+            filtered_by_strikes = {}
+            for col_name, values in filtered_data.items():
+                # Match standard CE/PE columns
+                match = re.match(r'^([A-Z]{3}\d{2})_(\d+)(CE|PE)_', col_name)
+                if match:
+                    strike = int(match.group(2))
+                    if strike in sub_strikes:
+                        filtered_by_strikes[col_name] = values
+                else:
+                    # Match skew columns
+                    match_skew = re.match(r'^([A-Z]{3}\d{2})_(\d+)_vega_skew', col_name)
+                    if match_skew:
+                        strike = int(match_skew.group(2))
+                        if strike in sub_strikes:
+                            filtered_by_strikes[col_name] = values
+                    else:
+                        # Keep non-strike columns
+                        filtered_by_strikes[col_name] = values
+            filtered_data = filtered_by_strikes
+        
+        # Filter by smooth preference - only send EMA columns or raw columns
+        if sub_smooth:
+            # Send only EMA columns
+            filtered_data = {k: v for k, v in filtered_data.items() if k.endswith('_ema')}
+        else:
+            # Send only raw columns (non-EMA)
+            filtered_data = {k: v for k, v in filtered_data.items() if not k.endswith('_ema')}
+        
+        normalized_json = {}
+        for col_name, values in filtered_data.items():
+            if isinstance(values, np.ndarray):
+                clean = [None if np.isnan(v) else float(v) for v in values]
+                normalized_json[col_name] = clean
+            else:
+                normalized_json[col_name] = values
+        
+        message = {
+            "type": "update",
+            "index": index_name,
+            "expiry": sub_expiry if sub_expiry in available_expiries else (available_expiries[0] if available_expiries else None),
+            "available_expiries": available_expiries,
+            "available_strikes": available_strikes,
+            "normalized": normalized_json,
+            "time_seconds": time_seconds,
+            "spot_price": spot_price,
+        }
+        
+        try:
+            await ws.send_json(message)
+        except Exception:
+            disconnected.append(ws)
     
     # Cleanup disconnected
     for ws in disconnected:
@@ -441,4 +753,5 @@ async def broadcast_normalized_update(index_name: str):
 
 
 if __name__ == "__main__":
-    uvicorn.run("fast_api:app", host="127.0.0.1", port=8000, reload=True)
+    # Disable reload for cleaner shutdown (no child processes)
+    uvicorn.run("fast_api:app", host="127.0.0.1", port=8000, reload=False)

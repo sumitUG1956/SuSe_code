@@ -19,8 +19,9 @@ const state = {
     selectedPEStrikes: new Set(),
     atmStrike: null,
     
-    // Normalized data from API
+    // Normalized data from API (lazy loaded per strike)
     normalizedData: {},
+    loadedStrikes: new Set(),  // Track which strikes have been loaded
     timeSeconds: [],
     
     // Charts
@@ -29,18 +30,26 @@ const state = {
     // WebSocket
     ws: null,
     wsConnected: false,
+    
+    // Loading state
+    loadingStrikes: new Set(),  // Track strikes currently being loaded
+    
+    // Display mode: 'ema' (smooth) or 'raw' (zigzag)
+    displayMode: 'ema',
 };
 
-// Chart definitions
+// Chart definitions - Simplified: Volume → Premium Decay → IV → OI (8 charts total)
+// metric is base name, _ema suffix added for smooth display
+// NOTE: Delta/Theta/Vega data still calculated in backend for alerts, just not displayed
 const CHART_CONFIG = [
-    { id: 'ce-iv-raw', optType: 'CE', metric: 'iv', label: 'IV Norm' },
-    { id: 'pe-iv-raw', optType: 'PE', metric: 'iv', label: 'IV Norm' },
-    { id: 'ce-oi', optType: 'CE', metric: 'oi_diff_cumsum', label: 'OI Diff' },
-    { id: 'pe-oi', optType: 'PE', metric: 'oi_diff_cumsum', label: 'OI Diff' },
-    { id: 'ce-tvv', optType: 'CE', metric: 'timevalue_vol_prod_cumsum', label: 'TV×Vol' },
-    { id: 'pe-tvv', optType: 'PE', metric: 'timevalue_vol_prod_cumsum', label: 'TV×Vol' },
-    { id: 'ce-tv', optType: 'CE', metric: 'timevalue_diff_cumsum', label: 'TV Diff' },
-    { id: 'pe-tv', optType: 'PE', metric: 'timevalue_diff_cumsum', label: 'TV Diff' },
+    { id: 'ce-tvv', optType: 'CE', metric: 'timevalue_vol_prod_cumsum', label: 'Volume' },
+    { id: 'pe-tvv', optType: 'PE', metric: 'timevalue_vol_prod_cumsum', label: 'Volume' },
+    { id: 'ce-tv', optType: 'CE', metric: 'timevalue_diff_cumsum', label: 'Premium Decay' },
+    { id: 'pe-tv', optType: 'PE', metric: 'timevalue_diff_cumsum', label: 'Premium Decay' },
+    { id: 'ce-iv', optType: 'CE', metric: 'iv_diff_cumsum', label: 'Implied Volatility' },
+    { id: 'pe-iv', optType: 'PE', metric: 'iv_diff_cumsum', label: 'Implied Volatility' },
+    { id: 'ce-oi', optType: 'CE', metric: 'oi_diff_cumsum', label: 'Open Interest' },
+    { id: 'pe-oi', optType: 'PE', metric: 'oi_diff_cumsum', label: 'Open Interest' },
 ];
 
 // Colors for different strikes
@@ -49,9 +58,69 @@ const STRIKE_COLORS = [
     '#56d364', '#db6d28', '#bc8cff', '#79c0ff', '#7ee787',
 ];
 
+// ============== AUTHENTICATION ==============
+
+async function checkAuth() {
+    const token = localStorage.getItem('authToken') || sessionStorage.getItem('authToken');
+    
+    if (!token) {
+        window.location.replace('/login');
+        return false;
+    }
+    
+    try {
+        const response = await fetch('/api/auth/verify', {
+            headers: { 'Authorization': `Bearer ${token}` }
+        });
+        
+        if (!response.ok) {
+            localStorage.removeItem('authToken');
+            localStorage.removeItem('userName');
+            sessionStorage.removeItem('authToken');
+            sessionStorage.removeItem('userName');
+            window.location.replace('/login');
+            return false;
+        }
+        
+        // Set user info in UI
+        const data = await response.json();
+        const userName = localStorage.getItem('userName') || sessionStorage.getItem('userName') || data.user?.name || 'User';
+        const userNameEl = document.getElementById('userName');
+        const userAvatarEl = document.getElementById('userAvatar');
+        
+        if (userNameEl) userNameEl.textContent = userName;
+        if (userAvatarEl) userAvatarEl.textContent = userName.charAt(0).toUpperCase();
+        
+        return true;
+    } catch (error) {
+        console.error('Auth check failed:', error);
+        return true; // Allow if network error (offline mode)
+    }
+}
+
+function logout() {
+    localStorage.removeItem('authToken');
+    localStorage.removeItem('userName');
+    sessionStorage.removeItem('authToken');
+    sessionStorage.removeItem('userName');
+    
+    // Clear history and redirect
+    window.location.replace('/login');
+}
+
 // ============== INITIALIZATION ==============
 
-document.addEventListener('DOMContentLoaded', () => {
+document.addEventListener('DOMContentLoaded', async () => {
+    // Check authentication first
+    const isAuthenticated = await checkAuth();
+    if (!isAuthenticated) return;
+    
+    // Setup logout button
+    const logoutBtn = document.getElementById('logoutBtn');
+    if (logoutBtn) {
+        logoutBtn.addEventListener('click', logout);
+    }
+    
     initCharts();
     initEventListeners();
     loadData();
@@ -343,11 +412,28 @@ async function loadData() {
     showLoading(true);
     
     try {
-        const response = await fetch(`/api/normalized/${state.currentIndex}`);
+        // First, load metadata only (no strikes) to get available expiries and strikes
+        let url = `/api/normalized/${state.currentIndex}`;
+        const params = new URLSearchParams();
+        if (state.currentExpiry) {
+            params.append('expiry', state.currentExpiry);
+        }
+        // Add smooth parameter based on display mode
+        params.append('smooth', state.displayMode === 'ema' ? 'true' : 'false');
+        // Don't request any strikes initially - just get metadata
+        
+        if (params.toString()) {
+            url += `?${params.toString()}`;
+        }
+        
+        const response = await fetch(url);
         if (!response.ok) throw new Error(`HTTP ${response.status}`);
         
         const data = await response.json();
-        processNormalizedData(data);
+        processMetadata(data);
+        
+        // Now load data for selected strikes (ATM by default)
+        await loadSelectedStrikesData();
         
     } catch (error) {
         console.error('Failed to load data:', error);
@@ -356,48 +442,151 @@ async function loadData() {
     }
 }
 
-function processNormalizedData(data) {
-    state.normalizedData = data.normalized || {};
-    state.timeSeconds = data.time_seconds || [];
+function processMetadata(data) {
+    // Get available expiries
+    if (data.available_expiries && data.available_expiries.length > 0) {
+        state.availableExpiries = data.available_expiries;
+    }
     
-    // Parse available expiries and strikes from column names
-    const expiries = new Set();
-    const strikes = new Set();
+    // Get available strikes from API response
+    if (data.available_strikes && data.available_strikes.length > 0) {
+        state.availableStrikes = data.available_strikes;
+    }
     
-    Object.keys(state.normalizedData).forEach(colName => {
-        // Column format: DEC24_24000CE_iv_diff_cumsum
-        const match = colName.match(/^([A-Z]{3}\d{2})_(\d+)(CE|PE)_/);
-        if (match) {
-            expiries.add(match[1]);
-            strikes.add(parseInt(match[2]));
-        }
-    });
-    
-    state.availableExpiries = Array.from(expiries).sort();
-    state.availableStrikes = Array.from(strikes).sort((a, b) => a - b);
-    
-    // Set default expiry
-    if (!state.currentExpiry && state.availableExpiries.length > 0) {
+    // Set current expiry
+    if (data.current_expiry) {
+        state.currentExpiry = data.current_expiry;
+    } else if (!state.currentExpiry && state.availableExpiries.length > 0) {
         state.currentExpiry = state.availableExpiries[0];
     }
     
-    // Find ATM strike (closest to current spot)
+    // Store time_seconds
+    state.timeSeconds = data.time_seconds || [];
+    
+    // Find ATM strike
     if (data.spot_price && state.availableStrikes.length > 0) {
         state.atmStrike = state.availableStrikes.reduce((prev, curr) => 
             Math.abs(curr - data.spot_price) < Math.abs(prev - data.spot_price) ? curr : prev
         );
     } else if (state.availableStrikes.length > 0) {
-        // Default to middle strike
         state.atmStrike = state.availableStrikes[Math.floor(state.availableStrikes.length / 2)];
     }
     
-    // Default: select ATM strike
+    // Default: select ATM strike if nothing selected
     if (state.selectedCEStrikes.size === 0 && state.atmStrike) {
         state.selectedCEStrikes.add(state.atmStrike);
         state.selectedPEStrikes.add(state.atmStrike);
     }
     
+    // Merge any incoming normalized data
+    if (data.normalized) {
+        Object.assign(state.normalizedData, data.normalized);
+        // Mark loaded strikes
+        Object.keys(data.normalized).forEach(colName => {
+            const match = colName.match(/^([A-Z]{3}\d{2})_(\d+)(CE|PE)_/);
+            if (match) {
+                state.loadedStrikes.add(parseInt(match[2]));
+            }
+        });
+    }
+    
     // Update UI
+    renderExpiryTabs();
+    renderStrikeButtons();
+}
+
+async function loadSelectedStrikesData() {
+    // Get all selected strikes that haven't been loaded yet
+    const allSelected = new Set([...state.selectedCEStrikes, ...state.selectedPEStrikes]);
+    const strikesToLoad = [...allSelected].filter(s => !state.loadedStrikes.has(s));
+    
+    if (strikesToLoad.length === 0) {
+        updateCharts();
+        return;
+    }
+    
+    // Mark as loading
+    strikesToLoad.forEach(s => state.loadingStrikes.add(s));
+    renderStrikeButtons();  // Show loading state
+    
+    try {
+        let url = `/api/normalized/${state.currentIndex}`;
+        const params = new URLSearchParams();
+        if (state.currentExpiry) {
+            params.append('expiry', state.currentExpiry);
+        }
+        params.append('strikes', strikesToLoad.join(','));
+        // Add smooth parameter - only fetch EMA or raw based on mode
+        params.append('smooth', state.displayMode === 'ema' ? 'true' : 'false');
+        url += `?${params.toString()}`;
+        
+        const response = await fetch(url);
+        if (!response.ok) throw new Error(`HTTP ${response.status}`);
+        
+        const data = await response.json();
+        
+        // Merge normalized data
+        if (data.normalized) {
+            Object.assign(state.normalizedData, data.normalized);
+        }
+        
+        // Update time_seconds if newer
+        if (data.time_seconds && data.time_seconds.length > state.timeSeconds.length) {
+            state.timeSeconds = data.time_seconds;
+        }
+        
+        // Mark strikes as loaded
+        strikesToLoad.forEach(s => {
+            state.loadedStrikes.add(s);
+            state.loadingStrikes.delete(s);
+        });
+        
+    } catch (error) {
+        console.error('Failed to load strike data:', error);
+        strikesToLoad.forEach(s => state.loadingStrikes.delete(s));
+    }
+    
+    renderStrikeButtons();
+    updateCharts();
+}
+
+function processNormalizedData(data) {
+    // Process WebSocket updates
+    state.timeSeconds = data.time_seconds || state.timeSeconds;
+    
+    // Merge normalized data (only for loaded strikes)
+    if (data.normalized) {
+        Object.assign(state.normalizedData, data.normalized);
+    }
+    
+    // Update available expiries if provided
+    if (data.available_expiries && data.available_expiries.length > 0) {
+        state.availableExpiries = data.available_expiries;
+    }
+    
+    // Update available strikes if provided
+    if (data.available_strikes && data.available_strikes.length > 0) {
+        state.availableStrikes = data.available_strikes;
+    }
+    
+    // Set expiry
+    if (data.current_expiry) {
+        state.currentExpiry = data.current_expiry;
+    }
+    
+    // Find ATM
+    if (data.spot_price && state.availableStrikes.length > 0) {
+        state.atmStrike = state.availableStrikes.reduce((prev, curr) => 
+            Math.abs(curr - data.spot_price) < Math.abs(prev - data.spot_price) ? curr : prev
+        );
+    }
+    
+    // Default selection
+    if (state.selectedCEStrikes.size === 0 && state.atmStrike) {
+        state.selectedCEStrikes.add(state.atmStrike);
+        state.selectedPEStrikes.add(state.atmStrike);
+    }
+    
     renderExpiryTabs();
     renderStrikeButtons();
     updateCharts();
@@ -424,16 +613,20 @@ function renderStrikeButtons() {
     ceContainer.innerHTML = state.availableStrikes.map(strike => {
         const isActive = state.selectedCEStrikes.has(strike);
         const isATM = strike === state.atmStrike;
-        return `<button class="strike-btn ${isActive ? 'active-ce' : ''} ${isATM ? 'atm-btn' : ''}" 
-                        data-strike="${strike}" data-type="CE">${strike}</button>`;
+        const isLoading = state.loadingStrikes.has(strike);
+        const isLoaded = state.loadedStrikes.has(strike);
+        return `<button class="strike-btn ${isActive ? 'active-ce' : ''} ${isATM ? 'atm-btn' : ''} ${isLoading ? 'loading' : ''} ${isLoaded && isActive ? 'loaded' : ''}" 
+                        data-strike="${strike}" data-type="CE">${isLoading ? '⏳' : ''}${strike}</button>`;
     }).join('');
     
     // PE buttons  
     peContainer.innerHTML = state.availableStrikes.map(strike => {
         const isActive = state.selectedPEStrikes.has(strike);
         const isATM = strike === state.atmStrike;
-        return `<button class="strike-btn ${isActive ? 'active-pe' : ''} ${isATM ? 'atm-btn' : ''}"
-                        data-strike="${strike}" data-type="PE">${strike}</button>`;
+        const isLoading = state.loadingStrikes.has(strike);
+        const isLoaded = state.loadedStrikes.has(strike);
+        return `<button class="strike-btn ${isActive ? 'active-pe' : ''} ${isATM ? 'atm-btn' : ''} ${isLoading ? 'loading' : ''} ${isLoaded && isActive ? 'loaded' : ''}"
+                        data-strike="${strike}" data-type="PE">${isLoading ? '⏳' : ''}${strike}</button>`;
     }).join('');
 }
 
@@ -444,20 +637,36 @@ function initEventListeners() {
             document.querySelectorAll('.index-tab').forEach(t => t.classList.remove('active'));
             e.target.classList.add('active');
             state.currentIndex = e.target.dataset.index;
-            state.currentExpiry = null;
+            state.currentExpiry = null;  // Reset expiry when changing index
             state.selectedCEStrikes.clear();
             state.selectedPEStrikes.clear();
+            state.loadedStrikes.clear();  // Clear loaded strikes cache
+            state.normalizedData = {};    // Clear cached data
             loadData();
+            
+            // Re-subscribe WebSocket with new index
+            sendWsSubscription();
         });
     });
     
-    // Expiry tabs (delegated)
+    // Expiry tabs (delegated) - reload data with new expiry filter
     document.getElementById('expiryTabs')?.addEventListener('click', (e) => {
         if (e.target.classList.contains('expiry-tab')) {
             document.querySelectorAll('.expiry-tab').forEach(t => t.classList.remove('active'));
             e.target.classList.add('active');
             state.currentExpiry = e.target.dataset.expiry;
-            updateCharts();
+            
+            // Clear strike selections and cache when changing expiry
+            state.selectedCEStrikes.clear();
+            state.selectedPEStrikes.clear();
+            state.loadedStrikes.clear();  // Clear loaded strikes cache
+            state.normalizedData = {};    // Clear cached data
+            
+            // Reload data with new expiry filter
+            loadData();
+            
+            // Re-subscribe WebSocket with new expiry
+            sendWsSubscription();
         }
     });
     
@@ -480,12 +689,26 @@ function toggleStrike(type, strike) {
     
     if (set.has(strike)) {
         set.delete(strike);
+        renderStrikeButtons();
+        updateCharts();
+        // Update WebSocket subscription (now with fewer strikes)
+        sendWsSubscription();
     } else {
         set.add(strike);
+        renderStrikeButtons();
+        
+        // Lazy load: fetch data for this strike if not already loaded
+        if (!state.loadedStrikes.has(strike)) {
+            loadSelectedStrikesData().then(() => {
+                // Update WebSocket subscription after data loaded
+                sendWsSubscription();
+            });
+        } else {
+            updateCharts();
+            // Update WebSocket subscription (now with more strikes)
+            sendWsSubscription();
+        }
     }
-    
-    renderStrikeButtons();
-    updateCharts();
 }
 
 // ============== CHART UPDATES ==============
@@ -527,6 +750,9 @@ function _doUpdateCharts() {
     const timestamps = state.timeSeconds.map(t => BASE_DATE + (t * 1000));
     const len = timestamps.length;
     
+    // Column suffix based on display mode (API sends _ema columns when smooth=true)
+    const suffix = state.displayMode === 'ema' ? '_ema' : '';
+    
     // Batch all chart updates
     CHART_CONFIG.forEach(config => {
         const chart = state.charts[config.id];
@@ -538,8 +764,10 @@ function _doUpdateCharts() {
         // Build all series data first
         const newSeriesData = [];
         strikesArray.forEach((strike, colorIndex) => {
-            const colName = `${state.currentExpiry}_${strike}${config.optType}_${config.metric}`;
+            // Column name matches API format
+            const colName = `${state.currentExpiry}_${strike}${config.optType}_${config.metric}${suffix}`;
             const values = state.normalizedData[colName];
+            
             if (!values) return;
             
             // Build data array efficiently
@@ -556,7 +784,8 @@ function _doUpdateCharts() {
                 newSeriesData.push({
                     name: `${strike}`,
                     data: data,
-                    color: STRIKE_COLORS[colorIndex % STRIKE_COLORS.length]
+                    color: STRIKE_COLORS[colorIndex % STRIKE_COLORS.length],
+                    lineWidth: state.displayMode === 'ema' ? 2 : 1.5,  // Thicker line for EMA
                 });
             }
         });
@@ -577,6 +806,7 @@ function _doUpdateCharts() {
             const existing = chart.series.find(s => s.name === sd.name);
             if (existing) {
                 existing.setData(sd.data, false, false, false);
+                existing.update({ lineWidth: sd.lineWidth }, false);
             } else {
                 chart.addSeries(sd, false);
             }
@@ -601,8 +831,8 @@ function connectWebSocket() {
             updateConnectionStatus(true);
             console.log('WebSocket connected');
             
-            // Send current index subscription
-            state.ws.send(JSON.stringify({ action: 'subscribe', index: state.currentIndex }));
+            // Subscribe with current index, expiry and selected strikes
+            sendWsSubscription();
         };
         
         state.ws.onmessage = (event) => {
@@ -633,6 +863,21 @@ function connectWebSocket() {
     }
 }
 
+// Send WebSocket subscription with current selected strikes
+function sendWsSubscription() {
+    if (!state.ws || !state.wsConnected) return;
+    
+    const allSelectedStrikes = [...new Set([...state.selectedCEStrikes, ...state.selectedPEStrikes])];
+    
+    state.ws.send(JSON.stringify({ 
+        action: 'subscribe', 
+        index: state.currentIndex,
+        expiry: state.currentExpiry,
+        strikes: allSelectedStrikes.length > 0 ? allSelectedStrikes : null,
+        smooth: state.displayMode === 'ema'
+    }));
+}
+
 function updateConnectionStatus(connected) {
     const dot = document.getElementById('statusDot');
     const text = document.getElementById('statusText');
@@ -643,6 +888,28 @@ function updateConnectionStatus(connected) {
     if (text) {
         text.textContent = connected ? 'Live' : 'Disconnected';
     }
+}
+
+// ============== DISPLAY MODE TOGGLE ==============
+
+function toggleDisplayMode() {
+    state.displayMode = state.displayMode === 'ema' ? 'raw' : 'ema';
+    
+    // Update button text
+    const btn = document.getElementById('displayModeBtn');
+    if (btn) {
+        btn.textContent = state.displayMode === 'ema' ? '📈 Smooth' : '📊 Raw';
+        btn.title = state.displayMode === 'ema' ? 'Showing EMA smoothed data (click for raw)' : 'Showing raw data (click for smooth)';
+    }
+    
+    // Clear cached data and reload - mode change means different data from server
+    state.normalizedData = {};
+    state.loadedStrikes.clear();
+    
+    // Reload data with new mode
+    loadSelectedStrikesData().then(() => {
+        sendWsSubscription();
+    });
 }
 
 // ============== UTILITIES ==============

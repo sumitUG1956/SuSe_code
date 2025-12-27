@@ -35,9 +35,9 @@ THREE_MINUTES = 580
 # Trading day cadence windows (IST) - Market hours 9:15 to 15:30
 # TODO: Remove 23:59 window after testing - only for debugging
 WINDOWS = [
-    (time(9, 15), time(9, 45), 20),
-    (time(9, 45), time(13, 45), 20),
-    (time(13, 45), time(15, 30), 10),
+    (time(9, 15), time(9, 45), 30),
+    (time(9, 45), time(13, 45), 30),
+    (time(13, 45), time(15, 30), 30),
     (time(15, 30), time(23, 59), 3000),  # DEBUG: Remove after testing
 ]
 
@@ -144,16 +144,22 @@ class CandleFetcher:
         self._task = asyncio.create_task(self._run(), name="candle-fetcher")
 
     async def stop(self) -> None:
+        log_info("[CandleFetcher] Stop requested")
         self._stop.set()
         if self._task:
-            await self._task
+            self._task.cancel()
+            try:
+                await asyncio.wait_for(self._task, timeout=3.0)
+            except (asyncio.TimeoutError, asyncio.CancelledError):
+                pass
         if self._session:
             await self._session.close()
         self._task = None
         self._session = None
+        log_info("[CandleFetcher] Stopped")
 
     async def reload_catalog(self) -> None:
-        specs = await asyncio.to_thread(self._load_catalog_sync)
+        specs = self._load_catalog_sync()
         if specs:
             self._instruments = specs
 
@@ -270,18 +276,23 @@ class CandleFetcher:
         ]
         await asyncio.gather(*tasks, return_exceptions=True)
         
-        # Auto normalize all index options after fetch cycle completes
+        # Check if stop was requested during fetch
+        if self._stop.is_set():
+            return True
+        
+        # Auto normalize all index options after fetch cycle completes (simple sequential)
         try:
-            await asyncio.to_thread(normalize_all_index_options)
+            normalize_all_index_options()
             log_info("[CandleFetcher] Combined normalization completed")
             
-            # Broadcast to WebSocket clients
-            try:
-                from fast_api import broadcast_normalized_update
-                for index_name in ("NIFTY", "BANKNIFTY", "SENSEX"):
-                    await broadcast_normalized_update(index_name)
-            except Exception as ws_err:
-                log_error(f"[CandleFetcher] WebSocket broadcast failed: {ws_err}")
+            # Broadcast to WebSocket clients (only if not stopping)
+            if not self._stop.is_set():
+                try:
+                    from fast_api import broadcast_normalized_update
+                    for index_name in ("NIFTY", "BANKNIFTY", "SENSEX"):
+                        await broadcast_normalized_update(index_name)
+                except Exception as ws_err:
+                    log_error(f"[CandleFetcher] WebSocket broadcast failed: {ws_err}")
                 
         except Exception as e:
             log_error(f"[CandleFetcher] Combined normalization failed: {e}")
@@ -422,11 +433,7 @@ class CandleFetcher:
             }
             
             set_candle_record(spec.trading_symbol, record)
-            await asyncio.to_thread(
-                run_calculation,
-                spec.trading_symbol,
-                record=record,
-            )
+            run_calculation(spec.trading_symbol, record=record)
 
     async def _record_error(self, spec, message):
         log_error(f"[CandleFetcher] {spec.trading_symbol}: {message}")

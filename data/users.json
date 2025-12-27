@@ -1,0 +1,40 @@
+{
+  "users": [
+    {
+      "id": "f58d4b927751ce24a401a484f3d2fdd5",
+      "first_name": "sumit",
+      "last_name": "gupta",
+      "email": "sumitug1956@gmail.com",
+      "phone": "7972712935",
+      "password_hash": "RTUyFR1zgQO+N4+TIGva3ZLJzIDiDAQ1DQkS7jYzKjo=",
+      "password_salt": "498e049628e0073f2a1b12280eae5c2e",
+      "created_at": "2025-12-24T10:03:53.055980",
+      "last_login": "2025-12-26T10:00:52.837327",
+      "is_active": true
+    },
+    {
+      "id": "fad25e443a35c0c77a88b94f7adacd5f",
+      "first_name": "Angel",
+      "last_name": "soul",
+      "email": "abc@abc.com",
+      "phone": "8975294033",
+      "password_hash": "ROvsHTL7xIZpAqe43TNWDSFmMA/S491Pj4gcAhhnFb4=",
+      "password_salt": "29e5176dc433eb797e655c5342dfc63c",
+      "created_at": "2025-12-24T10:08:13.116238",
+      "last_login": "2025-12-24T10:11:04.170625",
+      "is_active": true
+    },
+    {
+      "id": "663a4b20fa72384d99fc71ef5db37ca3",
+      "first_name": "atul",
+      "last_name": "peharakar",
+      "email": "atulpeharakar@gmail.com",
+      "phone": "+919209833009",
+      "password_hash": "KRqk0QKAylOx3kPX70htBG0i8NLqh/RCuCGTY5GvR0k=",
+      "password_salt": "490d8d6dac2117c6628f7f54fc93912b",
+      "created_at": "2025-12-26T16:02:39.873207",
+      "last_login": "2025-12-26T16:03:47.931570",
+      "is_active": true
+    }
+  ]
+}
