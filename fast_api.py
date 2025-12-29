@@ -19,7 +19,7 @@ from download_extract import clean_previous_downloads, download_and_extract
 from extract import refresh_payload_in_memory, run_report_script
 from market_fetcher import CandleFetcher
 from state import get_payload, get_numpy_candle_snapshot
-from combined_normalization import normalize_index_options, get_normalized_index_data, INDEX_NAMES
+from combined_normalization import normalize_index_options, get_normalized_index_data, get_metadata_only, INDEX_NAMES
 import pandas as pd
 import numpy as np
 from logger import log_error, log_info
@@ -424,7 +424,8 @@ async def get_normalized_data(index_name: str, expiry: str = None, strikes: str 
     Args:
         index_name: NIFTY, BANKNIFTY, or SENSEX
         expiry: Optional expiry filter (e.g., "DEC24", "JAN25"). If not provided, returns all expiries.
-        strikes: Optional comma-separated strike prices (e.g., "24000,24100,24200"). If not provided, returns all strikes.
+        strikes: Optional comma-separated strike prices (e.g., "24000,24100,24200"). 
+                 If not provided, returns ONLY metadata (no normalized data) for fast initial load.
         smooth: If True, returns EMA smoothed data (_ema columns). If False, returns raw data. Default True.
     
     Returns: {normalized: {col_name: [values...]}, time_seconds: [...], spot_price: float, available_expiries: [...], current_expiry: str, available_strikes: [...]}
@@ -433,7 +434,17 @@ async def get_normalized_data(index_name: str, expiry: str = None, strikes: str 
     if index_name not in INDEX_NAMES:
         raise HTTPException(status_code=400, detail=f"Invalid index. Use: {INDEX_NAMES}")
     
-    # Run normalization in thread pool
+    # FAST PATH: If no strikes requested, return only metadata (no heavy computation)
+    if not strikes:
+        # Get metadata from cached calculation state (already computed in background)
+        metadata = await run_in_threadpool(get_metadata_only, index_name)
+        
+        if not metadata:
+            raise HTTPException(status_code=404, detail=f"No data for {index_name}")
+        
+        return metadata
+    
+    # SLOW PATH: Strikes requested - need full normalization
     normalized = await run_in_threadpool(get_normalized_index_data, index_name)
     
     if not normalized:
@@ -465,28 +476,27 @@ async def get_normalized_data(index_name: str, expiry: str = None, strikes: str 
                 all_strikes.add(int(match_skew.group(2)))
     available_strikes = sorted(all_strikes)
     
-    # Filter by strikes if specified (lazy loading)
-    if strikes:
-        requested_strikes = set(int(s.strip()) for s in strikes.split(',') if s.strip().isdigit())
-        filtered_by_strikes = {}
-        for col_name, values in filtered_data.items():
-            # Match standard CE/PE columns
-            match = re.match(r'^([A-Z]{3}\d{2})_(\d+)(CE|PE)_', col_name)
-            if match:
-                strike = int(match.group(2))
+    # Filter by strikes (lazy loading - only requested strikes)
+    requested_strikes = set(int(s.strip()) for s in strikes.split(',') if s.strip().isdigit())
+    filtered_by_strikes = {}
+    for col_name, values in filtered_data.items():
+        # Match standard CE/PE columns
+        match = re.match(r'^([A-Z]{3}\d{2})_(\d+)(CE|PE)_', col_name)
+        if match:
+            strike = int(match.group(2))
+            if strike in requested_strikes:
+                filtered_by_strikes[col_name] = values
+        else:
+            # Match skew columns
+            match_skew = re.match(r'^([A-Z]{3}\d{2})_(\d+)_vega_skew', col_name)
+            if match_skew:
+                strike = int(match_skew.group(2))
                 if strike in requested_strikes:
                     filtered_by_strikes[col_name] = values
             else:
-                # Match skew columns
-                match_skew = re.match(r'^([A-Z]{3}\d{2})_(\d+)_vega_skew', col_name)
-                if match_skew:
-                    strike = int(match_skew.group(2))
-                    if strike in requested_strikes:
-                        filtered_by_strikes[col_name] = values
-                else:
-                    # Keep non-strike columns
-                    filtered_by_strikes[col_name] = values
-        filtered_data = filtered_by_strikes
+                # Keep non-strike columns (like SPOT columns)
+                filtered_by_strikes[col_name] = values
+    filtered_data = filtered_by_strikes
     
     # Get time_seconds from spot
     spot_snapshot = get_numpy_candle_snapshot(index_name)

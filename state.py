@@ -188,15 +188,36 @@ class CandleBuffer:
 
         # Step 4: Compute cumsum arrays vectorized
         def compute_cumsum(diff_arr, prev_cumsum):
+            """Compute cumsum, keeping NaN until first valid value if prev_cumsum is 0."""
             safe_diff = np.where(np.isfinite(diff_arr), diff_arr, 0.0)
             cumsum = np.cumsum(safe_diff) + prev_cumsum
+            
+            # If prev_cumsum is 0 (fresh start), make cumsum NaN until first valid diff
+            # This prevents leading zeros from polluting normalization
+            if prev_cumsum == 0.0:
+                valid_count = np.cumsum(np.isfinite(diff_arr))
+                cumsum = np.where(valid_count > 0, cumsum, np.nan)
+            
             return cumsum.astype(np.float32)
         
         def compute_prod_cumsum(diff_arr, mult_arr, prev_cumsum):
-            safe_diff = np.where(np.isfinite(diff_arr), diff_arr, 0.0)
+            """Compute product cumsum, keeping NaN until first valid value if prev_cumsum is 0."""
+            # Product is NaN if diff is NaN
+            is_valid = np.isfinite(diff_arr)
+            safe_diff = np.where(is_valid, diff_arr, 0.0)
             safe_mult = np.where(np.isfinite(mult_arr), mult_arr, 0.0)
-            prod = safe_diff * safe_mult
-            cumsum = np.cumsum(prod) + prev_cumsum
+            
+            prod_values = safe_diff * safe_mult
+            # Keep prod as NaN where diff was NaN
+            prod = np.where(is_valid, prod_values, np.nan)
+            
+            cumsum = np.cumsum(prod_values) + prev_cumsum
+            
+            # If prev_cumsum is 0 (fresh start), make cumsum NaN until first valid diff
+            if prev_cumsum == 0.0:
+                valid_count = np.cumsum(is_valid)
+                cumsum = np.where(valid_count > 0, cumsum, np.nan)
+            
             return prod.astype(np.float32), cumsum.astype(np.float32)
         
         avg_diff_cumsum_arr = compute_cumsum(avg_diff_arr, _prev_cumsum(self.avg_diff_cumsum))

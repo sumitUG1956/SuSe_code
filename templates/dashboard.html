@@ -171,6 +171,9 @@
             background: var(--bg-secondary);
             padding: 12px 20px;
             border-bottom: 1px solid var(--border-color);
+            position: sticky;
+            top: 52px; /* Below header */
+            z-index: 999;
         }
         
         .expiry-tabs {
@@ -283,7 +286,8 @@
             background: var(--bg-secondary);
             border: 1px solid var(--border-color);
             border-radius: 8px;
-            overflow: hidden;
+            overflow: visible;
+            position: relative;
         }
         
         .chart-container.chart-full-width {
@@ -300,21 +304,54 @@
         }
         
         .chart-title {
-            font-size: 13px;
-            font-weight: 600;
+            font-size: 16px;
+            font-weight: 700;
             color: var(--text-primary);
+            text-transform: uppercase;
+            letter-spacing: 1px;
         }
         
         .chart-title.ce {
-            color: var(--accent-green);
+            color: #00FF7F;
+            text-shadow: 0 0 10px rgba(0, 255, 127, 0.3);
         }
         
         .chart-title.pe {
-            color: var(--accent-red);
+            color: #FF6347;
+            text-shadow: 0 0 10px rgba(255, 99, 71, 0.3);
         }
         
         .chart-title.skew {
-            color: var(--accent-blue);
+            color: #00BFFF;
+            text-shadow: 0 0 10px rgba(0, 191, 255, 0.3);
+        }
+        
+        /* Watermark inside chart */
+        .chart-container {
+            position: relative;
+        }
+        
+        .chart-watermark {
+            position: absolute;
+            top: 55%;
+            left: 50%;
+            transform: translate(-50%, -50%);
+            font-size: 48px;
+            font-weight: 900;
+            opacity: 0.15;
+            pointer-events: none;
+            z-index: 5;
+            white-space: nowrap;
+            letter-spacing: 4px;
+            text-transform: uppercase;
+        }
+        
+        .chart-watermark.ce {
+            color: #00FF7F;
+        }
+        
+        .chart-watermark.pe {
+            color: #FF9500;
         }
         
         .chart-value {
@@ -325,6 +362,18 @@
         
         .chart-box {
             height: 400px;
+            width: 100%;
+            position: relative;
+            z-index: 1;
+        }
+        
+        /* Ensure Highcharts container takes full width */
+        .highcharts-container {
+            width: 100% !important;
+        }
+        
+        .highcharts-root {
+            width: 100% !important;
         }
         
         /* Highcharts dark theme overrides */
@@ -442,6 +491,203 @@
             .user-name {
                 display: none;
             }
+            
+            .header {
+                padding: 8px 12px;
+                flex-wrap: wrap;
+                gap: 8px;
+            }
+            
+            .header-left {
+                flex-wrap: wrap;
+                gap: 10px;
+                width: 100%;
+            }
+            
+            .logo {
+                font-size: 14px;
+            }
+            
+            .index-tabs {
+                gap: 4px;
+            }
+            
+            .index-tab {
+                padding: 5px 10px;
+                font-size: 11px;
+            }
+            
+            .header-right {
+                width: 100%;
+                justify-content: space-between;
+            }
+            
+            .display-mode-btn {
+                padding: 5px 10px;
+                font-size: 11px;
+            }
+            
+            .controls {
+                padding: 8px 12px;
+                top: 85px; /* Adjusted for wrapped header */
+            }
+            
+            .expiry-tabs {
+                flex-wrap: wrap;
+                gap: 4px;
+            }
+            
+            .expiry-tab {
+                padding: 4px 10px;
+                font-size: 11px;
+            }
+            
+            .strikes-section {
+                flex-direction: column;
+                gap: 15px;
+            }
+            
+            .strike-buttons {
+                gap: 4px;
+            }
+            
+            .strike-btn {
+                padding: 6px 8px;
+                font-size: 11px;
+                min-width: 50px;
+            }
+            
+            .strike-group-label {
+                font-size: 10px;
+            }
+            
+            .main-content {
+                padding: 10px;
+            }
+            
+            .chart-grid {
+                gap: 10px;
+            }
+            
+            .chart-container {
+                border-radius: 6px;
+            }
+            
+            .chart-box {
+                height: 280px;
+            }
+            
+            .chart-header {
+                padding: 8px 10px;
+            }
+            
+            .chart-title {
+                font-size: 13px;
+            }
+            
+            .chart-watermark {
+                font-size: 32px;
+            }
+            
+            .chart-value {
+                font-size: 10px;
+            }
+            
+            .user-avatar {
+                width: 28px;
+                height: 28px;
+                font-size: 12px;
+            }
+            
+            .logout-btn {
+                padding: 5px 8px;
+                font-size: 11px;
+            }
+            
+            .logout-btn svg {
+                width: 12px;
+                height: 12px;
+            }
+            
+            .crosshair-time {
+                font-size: 11px;
+                padding: 3px 8px;
+            }
+            
+            .status-indicator {
+                font-size: 10px;
+            }
+        }
+        
+        @media (max-width: 480px) {
+            .header-left {
+                justify-content: center;
+            }
+            
+            .logo {
+                width: 100%;
+                text-align: center;
+            }
+            
+            .index-tabs {
+                width: 100%;
+                justify-content: center;
+            }
+            
+            .index-tab {
+                padding: 6px 8px;
+                font-size: 10px;
+            }
+            
+            .controls {
+                top: 110px;
+            }
+            
+            .strike-btn {
+                padding: 8px 6px;
+                font-size: 10px;
+                min-width: 45px;
+            }
+            
+            .chart-box {
+                height: 220px;
+            }
+            
+            .chart-watermark {
+                font-size: 24px;
+            }
+            
+            .chart-title {
+                font-size: 11px;
+            }
+        }
+        
+        /* Touch-friendly improvements */
+        @media (hover: none) and (pointer: coarse) {
+            .strike-btn {
+                padding: 10px 8px;
+                min-height: 40px;
+            }
+            
+            .expiry-tab {
+                padding: 8px 12px;
+                min-height: 36px;
+            }
+            
+            .index-tab {
+                padding: 8px 14px;
+                min-height: 38px;
+            }
+            
+            .display-mode-btn {
+                padding: 8px 14px;
+                min-height: 36px;
+            }
+            
+            .logout-btn {
+                padding: 8px 12px;
+                min-height: 36px;
+            }
         }
     </style>
 </head>
@@ -460,6 +706,7 @@
             </div>
         </div>
         <div class="header-right">
+            <button class="display-mode-btn" id="zoomModeBtn" onclick="toggleZoomMode()" title="Enable drag-to-zoom">🔍 Zoom Off</button>
             <button class="display-mode-btn" id="displayModeBtn" onclick="toggleDisplayMode()" title="Showing EMA smoothed data (click for raw)">📈 Smooth</button>
             <span class="crosshair-time" id="crosshairTime">--:--</span>
             <div class="status-indicator">
@@ -503,8 +750,27 @@
     
     <main class="main-content">
         <div class="chart-grid">
-            <!-- Row 1: Volume -->
+            <!-- Row 1: Open Interest -->
             <div class="chart-container">
+                <div class="chart-watermark ce">OI</div>
+                <div class="chart-header">
+                    <span class="chart-title ce">CE - Open Interest</span>
+                    <span class="chart-value" id="val-ce-oi">--</span>
+                </div>
+                <div class="chart-box" id="chart-ce-oi"></div>
+            </div>
+            <div class="chart-container">
+                <div class="chart-watermark pe">OI</div>
+                <div class="chart-header">
+                    <span class="chart-title pe">PE - Open Interest</span>
+                    <span class="chart-value" id="val-pe-oi">--</span>
+                </div>
+                <div class="chart-box" id="chart-pe-oi"></div>
+            </div>
+            
+            <!-- Row 2: Volume -->
+            <div class="chart-container">
+                <div class="chart-watermark ce">VOLUME</div>
                 <div class="chart-header">
                     <span class="chart-title ce">CE - Volume</span>
                     <span class="chart-value" id="val-ce-tvv">--</span>
@@ -512,6 +778,7 @@
                 <div class="chart-box" id="chart-ce-tvv"></div>
             </div>
             <div class="chart-container">
+                <div class="chart-watermark pe">VOLUME</div>
                 <div class="chart-header">
                     <span class="chart-title pe">PE - Volume</span>
                     <span class="chart-value" id="val-pe-tvv">--</span>
@@ -521,6 +788,7 @@
             
             <!-- Row 2: Premium Decay -->
             <div class="chart-container">
+                <div class="chart-watermark ce">PREMIUM</div>
                 <div class="chart-header">
                     <span class="chart-title ce">CE - Premium Decay</span>
                     <span class="chart-value" id="val-ce-tv">--</span>
@@ -528,6 +796,7 @@
                 <div class="chart-box" id="chart-ce-tv"></div>
             </div>
             <div class="chart-container">
+                <div class="chart-watermark pe">PREMIUM</div>
                 <div class="chart-header">
                     <span class="chart-title pe">PE - Premium Decay</span>
                     <span class="chart-value" id="val-pe-tv">--</span>
@@ -537,6 +806,7 @@
             
             <!-- Row 3: Implied Volatility -->
             <div class="chart-container">
+                <div class="chart-watermark ce">IV</div>
                 <div class="chart-header">
                     <span class="chart-title ce">CE - Implied Volatility</span>
                     <span class="chart-value" id="val-ce-iv">--</span>
@@ -544,6 +814,7 @@
                 <div class="chart-box" id="chart-ce-iv"></div>
             </div>
             <div class="chart-container">
+                <div class="chart-watermark pe">IV</div>
                 <div class="chart-header">
                     <span class="chart-title pe">PE - Implied Volatility</span>
                     <span class="chart-value" id="val-pe-iv">--</span>
@@ -551,20 +822,58 @@
                 <div class="chart-box" id="chart-pe-iv"></div>
             </div>
             
-            <!-- Row 4: Open Interest -->
+            <!-- Row 4: Theta -->
             <div class="chart-container">
+                <div class="chart-watermark ce">THETA</div>
                 <div class="chart-header">
-                    <span class="chart-title ce">CE - Open Interest</span>
-                    <span class="chart-value" id="val-ce-oi">--</span>
+                    <span class="chart-title ce">CE - Theta</span>
+                    <span class="chart-value" id="val-ce-theta">--</span>
                 </div>
-                <div class="chart-box" id="chart-ce-oi"></div>
+                <div class="chart-box" id="chart-ce-theta"></div>
             </div>
             <div class="chart-container">
+                <div class="chart-watermark pe">THETA</div>
                 <div class="chart-header">
-                    <span class="chart-title pe">PE - Open Interest</span>
-                    <span class="chart-value" id="val-pe-oi">--</span>
+                    <span class="chart-title pe">PE - Theta</span>
+                    <span class="chart-value" id="val-pe-theta">--</span>
                 </div>
-                <div class="chart-box" id="chart-pe-oi"></div>
+                <div class="chart-box" id="chart-pe-theta"></div>
+            </div>
+            
+            <!-- Row 5: Vega -->
+            <div class="chart-container">
+                <div class="chart-watermark ce">VEGA</div>
+                <div class="chart-header">
+                    <span class="chart-title ce">CE - Vega</span>
+                    <span class="chart-value" id="val-ce-vega">--</span>
+                </div>
+                <div class="chart-box" id="chart-ce-vega"></div>
+            </div>
+            <div class="chart-container">
+                <div class="chart-watermark pe">VEGA</div>
+                <div class="chart-header">
+                    <span class="chart-title pe">PE - Vega</span>
+                    <span class="chart-value" id="val-pe-vega">--</span>
+                </div>
+                <div class="chart-box" id="chart-pe-vega"></div>
+            </div>
+            
+            <!-- Row 6: Delta -->
+            <div class="chart-container">
+                <div class="chart-watermark ce">DELTA</div>
+                <div class="chart-header">
+                    <span class="chart-title ce">CE - Delta</span>
+                    <span class="chart-value" id="val-ce-delta">--</span>
+                </div>
+                <div class="chart-box" id="chart-ce-delta"></div>
+            </div>
+            <div class="chart-container">
+                <div class="chart-watermark pe">DELTA</div>
+                <div class="chart-header">
+                    <span class="chart-title pe">PE - Delta</span>
+                    <span class="chart-value" id="val-pe-delta">--</span>
+                </div>
+                <div class="chart-box" id="chart-pe-delta"></div>
             </div>
         </div>
     </main>

@@ -180,6 +180,8 @@ def _build_combined_matrix(
         col_prefix = f"{parsed['expiry_short']}_{parsed['strike']}{parsed['type']}"
         
         # Add NORMALIZE_COLUMNS (will be normalized later)
+        # IMPORTANT: For cumsum columns, use LINEAR INTERPOLATION to fill gaps
+        # This provides smooth transitions and prevents artificial jumps in z-scores
         for col_name in NORMALIZE_COLUMNS:
             col_data = snapshot.get(col_name)
             if col_data is None:
@@ -192,6 +194,13 @@ def _build_combined_matrix(
             for i, t in enumerate(opt_time):
                 if t in time_to_idx:
                     aligned[time_to_idx[t]] = col_data[i]
+            
+            # Linear interpolation ONLY for middle gaps, keep leading NaN
+            # This prevents creating artificial data at the start
+            pd_series = pd.Series(aligned)
+            # interpolate() naturally keeps leading NaN, only fills middle gaps
+            # ffill() at the end for any trailing gaps after last valid value
+            aligned = pd_series.interpolate(method='linear', limit_direction='forward').ffill().to_numpy(dtype=np.float32)
             
             full_col_name = f"{col_prefix}_{col_name}"
             combined_data[full_col_name] = aligned
@@ -221,26 +230,59 @@ def _normalize_pandas_expanding(df: pd.DataFrame, decimals: int = 2) -> pd.DataF
     """
     Use Pandas expanding() for FAST bulk normalization.
     This is used for FIRST RUN only.
+    
+    IMPORTANT: Leading NaN values are preserved and stats are computed
+    only from valid (non-NaN) data points.
     """
-    # Handle NaN - forward fill then zero
-    num = df.ffill().fillna(0)
+    result = pd.DataFrame(index=df.index, columns=df.columns, dtype=np.float32)
     
-    # Calculate expanding stats
-    exp_median = num.expanding(min_periods=1).median()
-    exp_q1 = num.expanding(min_periods=2).quantile(0.25)
-    exp_q3 = num.expanding(min_periods=2).quantile(0.75)
+    for col in df.columns:
+        series = df[col]
+        
+        # Find first valid index
+        first_valid_idx = series.first_valid_index()
+        if first_valid_idx is None:
+            # All NaN - keep as NaN
+            result[col] = np.nan
+            continue
+        
+        # Get position of first valid value
+        first_valid_pos = df.index.get_loc(first_valid_idx)
+        
+        # Leading NaN stays NaN
+        if first_valid_pos > 0:
+            result.loc[result.index[:first_valid_pos], col] = np.nan
+        
+        # Extract only valid data portion (from first valid value onwards)
+        valid_series = series.iloc[first_valid_pos:]
+        
+        # Handle any remaining NaN in valid portion with ffill
+        valid_filled = valid_series.ffill().fillna(0)
+        
+        # Calculate expanding stats only on valid data
+        exp_median = valid_filled.expanding(min_periods=1).median()
+        exp_q1 = valid_filled.expanding(min_periods=2).quantile(0.25)
+        exp_q3 = valid_filled.expanding(min_periods=2).quantile(0.75)
+        
+        iqr = (exp_q3 - exp_q1)
+        
+        # Dynamic floor: max of fixed floor, or 10% of absolute median
+        # This prevents huge normalized values when IQR is tiny but values are changing
+        abs_median = exp_median.abs()
+        fixed_floor = 0.01
+        dynamic_floor = (abs_median * 0.1).clip(lower=fixed_floor)
+        
+        # Normalize
+        scaled = (valid_filled - exp_median) / iqr.clip(lower=dynamic_floor)
+        scaled = scaled.round(decimals).astype('float32')
+        
+        # First value = 0 (no history to normalize against)
+        scaled.iloc[0] = 0.0
+        
+        # Put back in result
+        result.loc[result.index[first_valid_pos:], col] = scaled.values
     
-    # IQR
-    iqr = (exp_q3 - exp_q1)
-    eps = 1e-9
-    
-    # Normalize: (value - median) / IQR
-    scaled = (num - exp_median) / iqr.clip(lower=eps)
-    
-    # Round and convert to float32
-    scaled = scaled.round(decimals).fillna(0).astype('float32')
-    
-    return scaled
+    return result
 
 
 def _normalize_incremental_numpy(
@@ -252,33 +294,56 @@ def _normalize_incremental_numpy(
     """
     Use NumPy loop for INCREMENTAL normalization.
     Only calculates NEW rows (start_index to end).
+    
+    Leading NaN values are preserved - normalization only starts from first valid value.
     """
     n = len(raw)
     
-    # Handle NaN - forward fill then zero (same as Pandas)
+    # Find first valid index in raw data
+    valid_mask = np.isfinite(raw)
+    valid_indices = np.where(valid_mask)[0]
+    
+    if len(valid_indices) == 0:
+        # All NaN
+        return np.full(n, np.nan, dtype=np.float32)
+    
+    first_valid_pos = valid_indices[0]
+    
+    # Create output array
+    out = np.full(n, np.nan, dtype=np.float32)
+    
+    # Copy cached normalized values
+    if start_index > 0 and existing_norm is not None:
+        out[:start_index] = existing_norm[:start_index]
+    
+    # If start_index is before first valid, adjust
+    effective_start = max(start_index, first_valid_pos)
+    
+    # Forward fill for computing stats (only valid portion)
     filled = np.copy(raw)
-    # Forward fill NaN
     mask = np.isnan(filled)
     idx = np.where(~mask, np.arange(len(filled)), 0)
     np.maximum.accumulate(idx, out=idx)
     filled = filled[idx]
-    # Fill remaining NaN with 0
     filled = np.where(np.isnan(filled), 0.0, filled)
     
-    # Extend array with cached values
-    out = np.zeros(n, dtype=np.float32)
-    out[:start_index] = existing_norm[:start_index]  # Copy cached (no recalculation!)
-    
-    eps = 1e-9
-    
-    # Calculate only NEW rows
-    for i in range(start_index, n):
-        prefix = filled[:i+1]  # Include current row (using filled data)
+    # Calculate only NEW rows (from first valid onwards)
+    for i in range(effective_start, n):
+        # Only use data from first_valid_pos onwards for stats
+        prefix = filled[first_valid_pos:i+1]
         
-        if len(prefix) >= 2:
+        if len(prefix) < 1:
+            continue
+        
+        if len(prefix) == 1:
+            out[i] = 0.0  # First valid value = 0
+        elif len(prefix) >= 2:
             med = np.median(prefix)
             q1, q3 = np.percentile(prefix, [25, 75])
-            iqr = max(q3 - q1, eps)
+            raw_iqr = q3 - q1
+            # Dynamic floor: max of fixed floor, or 10% of absolute median
+            dynamic_floor = max(0.01, abs(med) * 0.1)
+            iqr = max(raw_iqr, dynamic_floor)
             
             out[i] = round((filled[i] - med) / iqr, decimals)
     
@@ -290,17 +355,45 @@ def _zscore_pandas_expanding(series: pd.Series, decimals: int = 2) -> pd.Series:
     Z-score normalization using expanding window.
     zscore = (value - mean) / std
     Used ONLY for OI columns.
+    
+    IMPORTANT: Leading NaN values are preserved and stats are computed
+    only from valid (non-NaN) data points.
     """
-    # Handle NaN - forward fill then zero
-    num = series.ffill().fillna(0)
+    result = pd.Series(index=series.index, dtype=np.float32)
     
-    exp_mean = num.expanding(min_periods=1).mean()
-    exp_std = num.expanding(min_periods=2).std().clip(lower=1e-9)
+    # Find first valid index
+    first_valid_idx = series.first_valid_index()
+    if first_valid_idx is None:
+        return result  # All NaN
     
-    # zscore: (value - mean) / std
-    zscore = (num - exp_mean) / exp_std
+    # Get position of first valid value
+    first_valid_pos = series.index.get_loc(first_valid_idx)
     
-    return zscore.round(decimals).fillna(0).astype('float32')
+    # Leading NaN stays NaN
+    if first_valid_pos > 0:
+        result.loc[result.index[:first_valid_pos]] = np.nan
+    
+    # Extract only valid data portion
+    valid_series = series.iloc[first_valid_pos:]
+    
+    # Handle any remaining NaN with ffill
+    valid_filled = valid_series.ffill().fillna(0)
+    
+    # Calculate expanding stats
+    exp_mean = valid_filled.expanding(min_periods=1).mean()
+    exp_std = valid_filled.expanding(min_periods=2).std().clip(lower=1e-9)
+    
+    # zscore
+    zscore = (valid_filled - exp_mean) / exp_std
+    zscore = zscore.round(decimals).astype('float32')
+    
+    # First value = 0
+    zscore.iloc[0] = 0.0
+    
+    # Put back
+    result.loc[result.index[first_valid_pos:]] = zscore.values
+    
+    return result
 
 
 def _zscore_incremental_numpy(
@@ -312,10 +405,30 @@ def _zscore_incremental_numpy(
     """
     Z-score normalization using NumPy for incremental updates.
     Used ONLY for OI columns.
+    
+    Leading NaN values are preserved - normalization only starts from first valid value.
     """
     n = len(raw)
     
-    # Handle NaN - forward fill then zero (same as Pandas)
+    # Find first valid index
+    valid_mask = np.isfinite(raw)
+    valid_indices = np.where(valid_mask)[0]
+    
+    if len(valid_indices) == 0:
+        return np.full(n, np.nan, dtype=np.float32)
+    
+    first_valid_pos = valid_indices[0]
+    
+    # Create output array with NaN
+    out = np.full(n, np.nan, dtype=np.float32)
+    
+    # Copy cached values
+    if start_index > 0 and existing_norm is not None:
+        out[:start_index] = existing_norm[:start_index]
+    
+    effective_start = max(start_index, first_valid_pos)
+    
+    # Forward fill for computing stats
     filled = np.copy(raw)
     mask = np.isnan(filled)
     idx = np.where(~mask, np.arange(len(filled)), 0)
@@ -323,17 +436,20 @@ def _zscore_incremental_numpy(
     filled = filled[idx]
     filled = np.where(np.isnan(filled), 0.0, filled)
     
-    out = np.zeros(n, dtype=np.float32)
-    out[:start_index] = existing_norm[:start_index]
-    
-    eps = 1e-9
-    
-    for i in range(start_index, n):
-        prefix = filled[:i+1]  # Include current row
+    for i in range(effective_start, n):
+        prefix = filled[first_valid_pos:i+1]
         
-        if len(prefix) >= 2:
+        if len(prefix) < 1:
+            continue
+        
+        if len(prefix) == 1:
+            out[i] = 0.0
+        elif len(prefix) >= 2:
             mean = np.mean(prefix)
-            std = max(np.std(prefix, ddof=0), eps)
+            raw_std = np.std(prefix, ddof=0)
+            # Dynamic floor: max of fixed floor, or 10% of absolute mean
+            dynamic_floor = max(0.01, abs(mean) * 0.1)
+            std = max(raw_std, dynamic_floor)
             
             out[i] = round((filled[i] - mean) / std, decimals)
     
@@ -509,7 +625,7 @@ def normalize_index_options(index_name: str) -> Dict[str, np.ndarray]:
     cache_version = calc_state.get("cache_version", 0)
     
     # Cache version to invalidate old caches (increment when logic changes)
-    CURRENT_CACHE_VERSION = 4  # No shift - include current row in stats
+    CURRENT_CACHE_VERSION = 9  # Linear interp for middle gaps only, keep leading NaN
     
     n_rows = len(base_time)
     new_rows = n_rows - normalized_size
@@ -580,7 +696,7 @@ def normalize_index_options(index_name: str) -> Dict[str, np.ndarray]:
                     med = s.expanding(min_periods=1).median()
                     q1 = s.expanding(min_periods=2).quantile(0.25)
                     q3 = s.expanding(min_periods=2).quantile(0.75)
-                    iqr = (q3 - q1).clip(lower=1e-9)
+                    iqr = (q3 - q1).clip(lower=0.01)  # Reasonable floor
                     normalized = ((s - med.shift(1)) / iqr.shift(1)).round(2).fillna(0)
                     norm_out[col_name] = normalized.values.astype(np.float32)
     
@@ -622,32 +738,124 @@ def normalize_all_index_options() -> Dict[str, Dict[str, np.ndarray]]:
     return results
 
 
+def get_metadata_only(index_name: str) -> Optional[Dict]:
+    """
+    Get ONLY metadata (expiries, strikes, spot_price) without heavy normalization.
+    Used for fast initial page load.
+    
+    Returns: {normalized: {}, time_seconds: [], spot_price: float, available_expiries: [], available_strikes: [], ...}
+    """
+    import re
+    
+    # Get cached calculation state (already computed in background)
+    state_key = f"{index_name}_COMBINED"
+    calc_state = get_calculation_state(state_key)
+    
+    # Extract metadata from cached normalized data
+    norm_data = calc_state.get("norm", {})
+    
+    if not norm_data:
+        # Try to get from options symbols directly
+        catalog = get_trading_catalog()
+        grouped = _get_index_options(catalog)
+        options_symbols = grouped.get(index_name, [])
+        
+        if not options_symbols:
+            return None
+    
+    # Extract available expiries and strikes from column names
+    available_expiries = set()
+    all_strikes = set()
+    
+    for col_name in norm_data.keys():
+        # Extract expiry: DEC24_24000CE_iv_diff_cumsum -> DEC24
+        if "_" in col_name:
+            exp = col_name.split("_")[0]
+            if exp and len(exp) >= 4 and exp[:3].isalpha():
+                available_expiries.add(exp)
+        
+        # Extract strike
+        match = re.match(r'^([A-Z]{3}\d{2})_(\d+)(CE|PE)_', col_name)
+        if match:
+            all_strikes.add(int(match.group(2)))
+    
+    available_expiries = sorted(available_expiries)
+    available_strikes = sorted(all_strikes)
+    
+    # Get time_seconds and spot_price from spot snapshot
+    spot_snapshot = get_numpy_candle_snapshot(index_name)
+    time_seconds = []
+    spot_price = None
+    
+    if spot_snapshot:
+        ts = spot_snapshot.get("time_seconds")
+        size = spot_snapshot.get("size", len(ts) if ts is not None else 0)
+        if ts is not None:
+            time_seconds = ts[:size].tolist()
+        
+        avg = spot_snapshot.get("average")
+        if avg is not None and size > 0:
+            import numpy as np
+            spot_price = float(avg[size - 1]) if not np.isnan(avg[size - 1]) else None
+    
+    return {
+        "index": index_name,
+        "normalized": {},  # Empty - no data, just metadata
+        "time_seconds": time_seconds,
+        "spot_price": spot_price,
+        "available_expiries": available_expiries,
+        "available_strikes": available_strikes,
+        "smooth": True,
+        "current_expiry": available_expiries[0] if available_expiries else None,
+    }
+
+
 def get_normalized_index_data(index_name: str) -> Dict[str, np.ndarray]:
     """
     Get normalized data for an index WITH EMA smoothed columns.
     Returns cached data if available, otherwise computes it.
     
     Each original column gets an _ema version for smooth display.
+    EMA and skew columns are also cached to avoid recomputation.
     """
     state_key = f"{index_name}_COMBINED"
     calc_state = get_calculation_state(state_key)
     
+    # Check if we have cached data WITH EMA columns
+    cached_with_ema = calc_state.get("norm_with_ema")
+    cached_ema_size = calc_state.get("ema_size", 0)
+    
     if calc_state.get("norm"):
         norm_data = calc_state["norm"]
+        current_size = len(next(iter(norm_data.values()))) if norm_data else 0
+        
+        # If EMA cache exists and is same size, return directly
+        if cached_with_ema and cached_ema_size == current_size:
+            return cached_with_ema
+        
+        # Otherwise compute EMA and cache it
+        result = _add_ema_columns(norm_data)
+        result = _add_vega_skew_columns(result)
+        
+        # Cache the EMA result
+        update_calculation_state(
+            state_key,
+            norm_with_ema=result,
+            ema_size=current_size,
+        )
+        return result
     else:
         norm_data = normalize_index_options(index_name)
-    
-    # Add EMA columns
-    # Add EMA columns first, then vega skew
-    result = _add_ema_columns(norm_data)
-    result = _add_vega_skew_columns(result)
-    return result
+        result = _add_ema_columns(norm_data)
+        result = _add_vega_skew_columns(result)
+        return result
 
 
 __all__ = [
     "normalize_index_options",
     "normalize_all_index_options",
     "get_normalized_index_data",
+    "get_metadata_only",
     "NORMALIZE_COLUMNS",
     "INDEX_NAMES",
     "EMA_PERIOD",

@@ -197,6 +197,8 @@ def _attach_future_spot_features(df, is_future):
     
     Returns: 
         DataFrame with future-spot diff features
+    
+    NOTE: Cumsum will be NaN until first valid diff value.
     """
     # Agar future nahi hai to None columns add karo
     if not is_future:
@@ -218,13 +220,14 @@ def _attach_future_spot_features(df, is_future):
         .alias(FUT_SPOT_DIFF_COLUMN)
     ])
     
-    # Step 2: Cumsum calculate karo (null values ko skip karo)
+    # Step 2: Cumsum calculate karo - NaN until first valid diff
+    valid_seen = pl.col(FUT_SPOT_DIFF_COLUMN).is_not_null().cum_sum() > 0
+    raw_cumsum = pl.col(FUT_SPOT_DIFF_COLUMN).fill_null(0.0).cum_sum()
+    
     df = df.with_columns([
-        pl.when(pl.col(FUT_SPOT_DIFF_COLUMN).is_null())
-        .then(None)
-        .otherwise(
-            pl.col(FUT_SPOT_DIFF_COLUMN).fill_null(0.0).cum_sum()  # ✅ cum_sum
-        )
+        pl.when(valid_seen)
+        .then(raw_cumsum)
+        .otherwise(None)
         .cast(pl.Float32)
         .alias(FUT_SPOT_DIFF_CUMSUM_COLUMN)
     ])
@@ -244,17 +247,29 @@ def _attach_average_features(df):
     ])
     
     # Step 2: Cumsum aur products ek saath calculate karo
+    # IMPORTANT: Cumsum should be NaN until first valid diff value
     vol_col = pl.col("Volume").cast(pl.Float32)
-    avg_diff_filled = pl.col(AVG_DIFF_COLUMN).fill_null(0.0)
+    valid_seen = pl.col(AVG_DIFF_COLUMN).is_not_null().cum_sum() > 0
+    raw_cumsum = pl.col(AVG_DIFF_COLUMN).fill_null(0.0).cum_sum()
+    
+    # Product calculation - only when diff is valid
+    avg_vol_prod = (
+        pl.when(pl.col(AVG_DIFF_COLUMN).is_not_null())
+        .then(pl.col(AVG_DIFF_COLUMN) * vol_col)
+        .otherwise(None)
+    )
     
     df = df.with_columns([
-        avg_diff_filled.cum_sum().cast(pl.Float32).alias(AVG_DIFF_CUMSUM_COLUMN),
-        (avg_diff_filled * vol_col).cast(pl.Float32).alias(AVG_VOL_PROD_COLUMN),
+        pl.when(valid_seen).then(raw_cumsum).otherwise(None).cast(pl.Float32).alias(AVG_DIFF_CUMSUM_COLUMN),
+        avg_vol_prod.cast(pl.Float32).alias(AVG_VOL_PROD_COLUMN),
     ])
     
-    # Step 3: Product cumsum
+    # Step 3: Product cumsum - NaN until first valid product
+    prod_valid_seen = pl.col(AVG_VOL_PROD_COLUMN).is_not_null().cum_sum() > 0
+    prod_raw_cumsum = pl.col(AVG_VOL_PROD_COLUMN).fill_null(0.0).cum_sum()
+    
     df = df.with_columns([
-        pl.col(AVG_VOL_PROD_COLUMN).fill_null(0.0).cum_sum().cast(pl.Float32).alias(AVG_VOL_PROD_CUMSUM_COLUMN)
+        pl.when(prod_valid_seen).then(prod_raw_cumsum).otherwise(None).cast(pl.Float32).alias(AVG_VOL_PROD_CUMSUM_COLUMN)
     ])
     
     return df
@@ -598,15 +613,24 @@ def _add_diff_cumsum_batch(df, source_columns_map):
     
     Returns:
         DataFrame with all diff and cumsum columns added efficiently
+    
+    NOTE: Cumsum will be NaN until first valid diff value to avoid
+    polluting normalization with leading zeros.
+    
+    IMPORTANT: Diff is only calculated when BOTH current AND previous values are valid.
+    This prevents large jumps when values go from null -> valid after gaps.
     """
     # Step 1: Saare diff columns ek saath add karo
+    # Diff sirf tab calculate karo jab current AND previous dono valid ho
     diff_exprs = []
     for source_col, (diff_col_name, _) in source_columns_map.items():
+        curr_valid = pl.col(source_col).is_finite()
+        prev_valid = pl.col(source_col).shift(1).is_finite()
+        # Diff only when both current and previous are valid
         diff_exprs.append(
-            pl.when(pl.col(source_col).is_finite())
-            .then(pl.col(source_col))
+            pl.when(curr_valid & prev_valid)
+            .then(pl.col(source_col) - pl.col(source_col).shift(1))
             .otherwise(None)
-            .diff()
             .cast(pl.Float32)
             .alias(diff_col_name)
         )
@@ -615,12 +639,18 @@ def _add_diff_cumsum_batch(df, source_columns_map):
         df = df.with_columns(diff_exprs)
     
     # Step 2: Saare cumsum columns ek saath add karo
+    # IMPORTANT: Cumsum should be NaN until first valid diff value
+    # This prevents leading zeros from messing up normalization
     cumsum_exprs = []
     for _, (diff_col_name, cumsum_col_name) in source_columns_map.items():
+        # Track where we have seen at least one valid value
+        valid_seen = pl.col(diff_col_name).is_not_null().cum_sum() > 0
+        raw_cumsum = pl.col(diff_col_name).fill_null(0.0).cum_sum()
+        
         cumsum_exprs.append(
-            pl.col(diff_col_name)
-            .fill_null(0.0)
-            .cum_sum()
+            pl.when(valid_seen)
+            .then(raw_cumsum)
+            .otherwise(None)
             .cast(pl.Float32)
             .alias(cumsum_col_name)
         )
@@ -641,12 +671,17 @@ def _add_product_cumsum_batch(df, products_config):
     
     Returns:
         DataFrame with all product and cumsum columns added
+    
+    NOTE: Cumsum will be NaN until first valid product value.
     """
     # Step 1: Saare product columns ek saath
+    # Product is NaN if diff is null
     prod_exprs = []
     for diff_col, mult_col, prod_col, _ in products_config:
         prod_exprs.append(
-            (pl.col(diff_col).fill_null(0.0) * pl.col(mult_col).cast(pl.Float32))
+            pl.when(pl.col(diff_col).is_not_null())
+            .then(pl.col(diff_col) * pl.col(mult_col).cast(pl.Float32))
+            .otherwise(None)
             .cast(pl.Float32)
             .alias(prod_col)
         )
@@ -655,12 +690,17 @@ def _add_product_cumsum_batch(df, products_config):
         df = df.with_columns(prod_exprs)
     
     # Step 2: Saare cumsum columns ek saath
+    # IMPORTANT: Cumsum should be NaN until first valid product value
     cumsum_exprs = []
-    for _, _, prod_col, prod_cumsum_col in products_config:
+    for diff_col, _, prod_col, prod_cumsum_col in products_config:
+        # Track where we have seen at least one valid value
+        valid_seen = pl.col(prod_col).is_not_null().cum_sum() > 0
+        raw_cumsum = pl.col(prod_col).fill_null(0.0).cum_sum()
+        
         cumsum_exprs.append(
-            pl.col(prod_col)
-            .fill_null(0.0)
-            .cum_sum()
+            pl.when(valid_seen)
+            .then(raw_cumsum)
+            .otherwise(None)
             .cast(pl.Float32)
             .alias(prod_cumsum_col)
         )

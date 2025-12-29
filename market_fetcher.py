@@ -285,6 +285,12 @@ class CandleFetcher:
             normalize_all_index_options()
             log_info("[CandleFetcher] Combined normalization completed")
             
+            # Pre-compute EMA columns so first user request is fast
+            from combined_normalization import get_normalized_index_data
+            for index_name in ("NIFTY", "BANKNIFTY", "SENSEX"):
+                get_normalized_index_data(index_name)
+            log_info("[CandleFetcher] EMA columns pre-computed")
+            
             # Broadcast to WebSocket clients (only if not stopping)
             if not self._stop.is_set():
                 try:
