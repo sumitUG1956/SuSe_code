@@ -9,19 +9,7 @@
       "password_hash": "RTUyFR1zgQO+N4+TIGva3ZLJzIDiDAQ1DQkS7jYzKjo=",
       "password_salt": "498e049628e0073f2a1b12280eae5c2e",
       "created_at": "2025-12-24T10:03:53.055980",
-      "last_login": "2025-12-29T10:12:53.628076",
-      "is_active": true
-    },
-    {
-      "id": "fad25e443a35c0c77a88b94f7adacd5f",
-      "first_name": "Angel",
-      "last_name": "soul",
-      "email": "abc@abc.com",
-      "phone": "8975294033",
-      "password_hash": "ROvsHTL7xIZpAqe43TNWDSFmMA/S491Pj4gcAhhnFb4=",
-      "password_salt": "29e5176dc433eb797e655c5342dfc63c",
-      "created_at": "2025-12-24T10:08:13.116238",
-      "last_login": "2025-12-24T10:11:04.170625",
+      "last_login": "2025-12-29T10:00:34.252723",
       "is_active": true
     },
     {
