@@ -5,8 +5,10 @@
 import json
 import subprocess
 import sys
-from datetime import datetime, timezone
+from datetime import datetime, timezone, time as time_cls
 from pathlib import Path
+from urllib.request import Request, urlopen
+from urllib.parse import quote
 from zoneinfo import ZoneInfo
 
 from state import set_payload
@@ -286,11 +288,103 @@ else:
     INDEX_TARGETS = FULL_INDEX_TARGETS
     EQUITY_SYMBOLS = FULL_EQUITY_SYMBOLS
 
-DEFAULT_SPOT_PRICES = {
-    "NIFTY": 26100.0,
-    "BANKNIFTY": 59100.0,
-    "SENSEX": 85300.0,
+# Manual fallback prices - use these via spot_overrides parameter if API is down
+# Example: refresh_payload_in_memory(spot_overrides={"NIFTY": 24000.0, "BANKNIFTY": 52000.0, "SENSEX": 79000.0})
+MANUAL_SPOT_PRICES = {
+    "NIFTY": 24000.0,
+    "BANKNIFTY": 52000.0,
+    "SENSEX": 79000.0,
 }
+
+API_URL = "https://service.upstox.com/chart/open/v3/candles"
+
+
+def fetch_live_spot_prices(instruments):
+    """
+    Fetch live spot prices for NIFTY, BANKNIFTY, SENSEX from Upstox API.
+    
+    Uses 09:16:00 IST candle (S10 interval) to get opening spot price.
+    
+    Args:
+        instruments: List of instruments from complete.json
+    
+    Returns:
+        dict: {"NIFTY": 24000.5, "BANKNIFTY": 52100.0, "SENSEX": 79500.0}
+    
+    Raises:
+        RuntimeError: If any API call fails or returns no data
+    """
+    IST = ZoneInfo("Asia/Kolkata")
+    now = datetime.now(tz=IST)
+    
+    # Target time: Today 09:16:00 IST
+    target_time = datetime.combine(now.date(), time_cls(9, 16, 0), tzinfo=IST)
+    from_ts = int(target_time.timestamp() * 1000)  # Unix milliseconds
+    
+    spot_prices = {}
+    
+    for target in INDEX_TARGETS:
+        label = target["label"]
+        options_cfg = target.get("options")
+        
+        # Skip if no options configured (LIMITED_MODE)
+        if not options_cfg:
+            continue
+        
+        # Step 1: Get instrument_key from complete.json
+        try:
+            spot_instrument = find_spot(instruments, **target["spot"])
+            instrument_key = spot_instrument.get("instrument_key")
+        except LookupError as e:
+            raise RuntimeError(f"[fetch_live_spot] {label}: Could not find spot instrument - {e}")
+        
+        if not instrument_key:
+            raise RuntimeError(f"[fetch_live_spot] {label}: No instrument_key found in spot instrument")
+        
+        print(f"[fetch_live_spot] {label}: instrument_key = {instrument_key}")
+        
+        # Step 2: Build API URL with proper encoding
+        # instrument_key needs to be URL encoded (e.g., "NSE_INDEX|Nifty 50" -> "NSE_INDEX%7CNifty%2050")
+        encoded_key = quote(instrument_key, safe="")
+        url = f"{API_URL}?instrumentKey={encoded_key}&interval=S10&from={from_ts}&limit=2"
+        print(f"[fetch_live_spot] {label}: URL = {url}")
+        
+        # Step 3: Make API request
+        try:
+            headers = {
+                "User-Agent": "Mozilla/5.0",
+                "Accept": "application/json",
+            }
+            request = Request(url, headers=headers)
+            response = urlopen(request, timeout=15)
+            data = json.loads(response.read())
+        except Exception as e:
+            raise RuntimeError(f"[fetch_live_spot] {label}: API request failed - {e}")
+        
+        # Step 4: Parse candles and extract Close price
+        candles = data.get("data", {}).get("candles", [])
+        
+        if not candles:
+            raise RuntimeError(
+                f"[fetch_live_spot] {label}: No candles returned from API! "
+                f"Check if market is open and 09:16 IST candle exists for today."
+            )
+        
+        # Candle format: [timestamp, open, high, low, close, volume, oi]
+        # Close price = index 4
+        try:
+            close_price = float(candles[0][4])
+        except (IndexError, TypeError, ValueError) as e:
+            raise RuntimeError(f"[fetch_live_spot] {label}: Failed to parse close price - {e}")
+        
+        spot_prices[label] = close_price
+        print(f"[fetch_live_spot] ✅ {label}: Close = {close_price}")
+    
+    if not spot_prices:
+        raise RuntimeError("[fetch_live_spot] No spot prices fetched! Check INDEX_TARGETS configuration.")
+    
+    print(f"[fetch_live_spot] ✅ All spot prices fetched: {spot_prices}")
+    return spot_prices
 
 
 def build_filtered_payload(
@@ -299,9 +393,9 @@ def build_filtered_payload(
     spot_overrides=None,
 ):
     """Create the filtered payload aggregating spot, futures, and option snapshots."""
-    spot_prices = {**DEFAULT_SPOT_PRICES}
-    if spot_overrides:
-        spot_prices.update(spot_overrides)
+    if not spot_overrides:
+        raise ValueError("[build_filtered_payload] spot_overrides is required! Use fetch_live_spot_prices() or provide manual prices.")
+    spot_prices = {**spot_overrides}
 
     results = {"indices": {}, "equities": {}}
 
@@ -439,9 +533,47 @@ def refresh_payload_in_memory(
     instruments=None,
     spot_overrides=None,
 ):
-    """Build the filtered payload and store it in the process RAM."""
+    """
+    Build the filtered payload and store it in the process RAM.
+    
+    Args:
+        instruments: Pre-loaded instruments list (optional, will load from file if not provided)
+        spot_overrides: Manual spot prices dict (optional). 
+                       If not provided, will fetch live prices from Upstox API.
+                       Example: {"NIFTY": 24000.0, "BANKNIFTY": 52000.0, "SENSEX": 79000.0}
+    
+    Raises:
+        RuntimeError: If live price fetch fails and no manual override provided
+    """
     data = instruments if instruments is not None else load_instruments()
-    payload = build_filtered_payload(data, spot_overrides=spot_overrides)
+    
+    # Determine spot prices
+    if spot_overrides is not None:
+        # Manual override provided - use it directly
+        print(f"[extract] Using manual spot prices: {spot_overrides}")
+        final_spot_prices = spot_overrides
+    else:
+        # Fetch live prices from API
+        print("[extract] Fetching live spot prices from Upstox API...")
+        try:
+            final_spot_prices = fetch_live_spot_prices(data)
+        except Exception as e:
+            print(f"\n{'='*60}")
+            print(f"❌ FAILED TO FETCH LIVE SPOT PRICES")
+            print(f"{'='*60}")
+            print(f"Error: {e}")
+            print(f"\n💡 To start server with manual prices, use:")
+            print(f"   refresh_payload_in_memory(spot_overrides=MANUAL_SPOT_PRICES)")
+            print(f"\n   Or update MANUAL_SPOT_PRICES in extract.py with current values:")
+            print(f"   MANUAL_SPOT_PRICES = {{")
+            print(f'       "NIFTY": <current_price>,')
+            print(f'       "BANKNIFTY": <current_price>,')
+            print(f'       "SENSEX": <current_price>,')
+            print(f"   }}")
+            print(f"{'='*60}\n")
+            raise
+    
+    payload = build_filtered_payload(data, spot_overrides=final_spot_prices)
     store_payload_in_memory(payload)
     return payload
 

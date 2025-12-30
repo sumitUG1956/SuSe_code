@@ -714,6 +714,7 @@ def _add_product_cumsum_batch(df, products_config):
 def _attach_option_diff_features(df, is_option):
     """
     Option-specific diff aur cumsum features add karta hai - OPTIMIZED VERSION
+    OI is calculated for both OPTIONS and FUTURES (since both have OpenInterest)
     
     Args: 
         df: Polars DataFrame
@@ -722,9 +723,10 @@ def _attach_option_diff_features(df, is_option):
     Returns: 
         DataFrame with option diff features
     """
-    # Agar option nahi hai to sab columns None se fill karo (ek hi call me)
+    # Agar option nahi hai to GREEKS columns None se fill karo
+    # BUT OI is calculated separately (futures bhi have OI)
     if not is_option:
-        return df.with_columns([
+        df = df.with_columns([
             pl.lit(None).cast(pl.Float32).alias(IV_DIFF_COLUMN),
             pl.lit(None).cast(pl.Float32).alias(IV_DIFF_CUMSUM_COLUMN),
             pl.lit(None).cast(pl.Float32).alias(DELTA_DIFF_COLUMN),
@@ -737,11 +739,19 @@ def _attach_option_diff_features(df, is_option):
             pl.lit(None).cast(pl.Float32).alias(TIMEVALUE_DIFF_CUMSUM_COLUMN),
             pl.lit(None).cast(pl.Float32).alias(TIMEVALUE_VOL_PROD_COLUMN),
             pl.lit(None).cast(pl.Float32).alias(TIMEVALUE_VOL_PROD_CUMSUM_COLUMN),
-            pl.lit(None).cast(pl.Float32).alias(OI_DIFF_COLUMN),
-            pl.lit(None).cast(pl.Float32).alias(OI_DIFF_CUMSUM_COLUMN),
         ])
+        # Add OI columns for futures (if OpenInterest column exists)
+        if "OpenInterest" in df.columns:
+            oi_map = {"OpenInterest": (OI_DIFF_COLUMN, OI_DIFF_CUMSUM_COLUMN)}
+            df = _add_diff_cumsum_batch(df, oi_map)
+        else:
+            df = df.with_columns([
+                pl.lit(None).cast(pl.Float32).alias(OI_DIFF_COLUMN),
+                pl.lit(None).cast(pl.Float32).alias(OI_DIFF_CUMSUM_COLUMN),
+            ])
+        return df
 
-    # Option hai to batch me calculations karo
+    # Option hai to batch me calculations karo (including OI)
     source_columns_map = {
         IV_COLUMN: (IV_DIFF_COLUMN, IV_DIFF_CUMSUM_COLUMN),
         DELTA_COLUMN: (DELTA_DIFF_COLUMN, DELTA_DIFF_CUMSUM_COLUMN),
@@ -760,126 +770,6 @@ def _attach_option_diff_features(df, is_option):
     df = _add_product_cumsum_batch(df, products_config)
     
     return df
-
-    # Option hai to batch me calculations karo
-    source_columns_map = {
-        IV_COLUMN: (IV_DIFF_COLUMN, IV_DIFF_CUMSUM_COLUMN),
-        DELTA_COLUMN: (DELTA_DIFF_COLUMN, DELTA_DIFF_CUMSUM_COLUMN),
-        VEGA_COLUMN: (VEGA_DIFF_COLUMN, VEGA_DIFF_CUMSUM_COLUMN),
-        THETA_COLUMN: (THETA_DIFF_COLUMN, THETA_DIFF_CUMSUM_COLUMN),
-        TIMEVALUE_COLUMN: (TIMEVALUE_DIFF_COLUMN, TIMEVALUE_DIFF_CUMSUM_COLUMN),
-        "OpenInterest": (OI_DIFF_COLUMN, OI_DIFF_CUMSUM_COLUMN),
-    }
-    
-    df = _add_diff_cumsum_batch(df, source_columns_map)
-    
-    # TimeValue * Volume product
-    products_config = [
-        (TIMEVALUE_DIFF_COLUMN, "Volume", TIMEVALUE_VOL_PROD_COLUMN, TIMEVALUE_VOL_PROD_CUMSUM_COLUMN),
-    ]
-    df = _add_product_cumsum_batch(df, products_config)
-    
-    return df
-
-# def _attach_option_diff_features(df, is_option):
-#     if not is_option:
-#         return df.with_columns(
-#             pl.lit(None).cast(pl.Float32).alias(IV_DIFF_COLUMN),
-#             pl.lit(None).cast(pl.Float32).alias(IV_DIFF_CUMSUM_COLUMN),
-#             pl.lit(None).cast(pl.Float32).alias(DELTA_DIFF_COLUMN),
-#             pl.lit(None).cast(pl.Float32).alias(DELTA_DIFF_CUMSUM_COLUMN),
-#             pl.lit(None).cast(pl.Float32).alias(VEGA_DIFF_COLUMN),
-#             pl.lit(None).cast(pl.Float32).alias(VEGA_DIFF_CUMSUM_COLUMN),
-#             pl.lit(None).cast(pl.Float32).alias(THETA_DIFF_COLUMN),
-#             pl.lit(None).cast(pl.Float32).alias(THETA_DIFF_CUMSUM_COLUMN),
-#             pl.lit(None).cast(pl.Float32).alias(TIMEVALUE_DIFF_COLUMN),
-#             pl.lit(None).cast(pl.Float32).alias(TIMEVALUE_DIFF_CUMSUM_COLUMN),
-#             pl.lit(None).cast(pl.Float32).alias(TIMEVALUE_VOL_PROD_COLUMN),
-#             pl.lit(None).cast(pl.Float32).alias(TIMEVALUE_VOL_PROD_CUMSUM_COLUMN),
-#             pl.lit(None).cast(pl.Float32).alias(OI_DIFF_COLUMN),
-#             pl.lit(None).cast(pl.Float32).alias(OI_DIFF_CUMSUM_COLUMN),
-#         )
-
-#     iv_col = pl.col(IV_COLUMN)
-#     iv_clean = pl.when(iv_col.is_finite()).then(iv_col).otherwise(None)
-#     iv_diff = iv_clean.diff().cast(pl.Float32).alias(IV_DIFF_COLUMN)
-#     iv_cumsum = (
-#         pl.when(iv_diff.is_null()).then(0.0).otherwise(iv_diff)
-#         .cumsum()
-#         .cast(pl.Float32)
-#         .alias(IV_DIFF_CUMSUM_COLUMN)
-#     )
-
-#     delta_col = pl.col(DELTA_COLUMN)
-#     delta_clean = pl.when(delta_col.is_finite()).then(delta_col).otherwise(None)
-#     delta_diff = delta_clean.diff().cast(pl.Float32).alias(DELTA_DIFF_COLUMN)
-#     delta_diff_filled = pl.when(delta_diff.is_null()).then(0.0).otherwise(delta_diff)
-#     delta_cumsum = (
-#         delta_diff_filled.cumsum().cast(pl.Float32).alias(DELTA_DIFF_CUMSUM_COLUMN)
-#     )
-
-#     vega_col = pl.col(VEGA_COLUMN)
-#     vega_clean = pl.when(vega_col.is_finite()).then(vega_col).otherwise(None)
-#     vega_diff = vega_clean.diff().cast(pl.Float32).alias(VEGA_DIFF_COLUMN)
-#     vega_diff_filled = pl.when(vega_diff.is_null()).then(0.0).otherwise(vega_diff)
-#     vega_cumsum = (
-#         vega_diff_filled.cumsum().cast(pl.Float32).alias(VEGA_DIFF_CUMSUM_COLUMN)
-#     )
-
-#     theta_col = pl.col(THETA_COLUMN)
-#     theta_clean = pl.when(theta_col.is_finite()).then(theta_col).otherwise(None)
-#     theta_diff = theta_clean.diff().cast(pl.Float32).alias(THETA_DIFF_COLUMN)
-#     theta_diff_filled = pl.when(theta_diff.is_null()).then(0.0).otherwise(theta_diff)
-#     theta_cumsum = (
-#         theta_diff_filled.cumsum().cast(pl.Float32).alias(THETA_DIFF_CUMSUM_COLUMN)
-#     )
-#     tv_col = pl.col(TIMEVALUE_COLUMN)
-#     tv_clean = pl.when(tv_col.is_finite()).then(tv_col).otherwise(None)
-#     tv_diff = tv_clean.diff().cast(pl.Float32).alias(TIMEVALUE_DIFF_COLUMN)
-#     tv_diff_filled = pl.when(tv_diff.is_null()).then(0.0).otherwise(tv_diff)
-#     tv_cumsum = (
-#         tv_diff_filled.cumsum().cast(pl.Float32).alias(TIMEVALUE_DIFF_CUMSUM_COLUMN)
-#     )
-
-#     vol_col = pl.col("Volume").cast(pl.Float32)
-#     tv_vol_prod = (
-#         (tv_diff_filled * vol_col)
-#         .cast(pl.Float32)
-#         .alias(TIMEVALUE_VOL_PROD_COLUMN)
-#     )
-#     tv_vol_prod_cumsum = (
-#         tv_vol_prod.fill_null(0.0)
-#         .cumsum()
-#         .cast(pl.Float32)
-#         .alias(TIMEVALUE_VOL_PROD_CUMSUM_COLUMN)
-#     )
-
-#     oi_col = pl.col("OpenInterest")
-#     oi_clean = pl.when(oi_col.is_finite()).then(oi_col).otherwise(None)
-#     oi_diff = oi_clean.diff().cast(pl.Float32).alias(OI_DIFF_COLUMN)
-#     oi_diff_filled = pl.when(oi_diff.is_null()).then(0.0).otherwise(oi_diff)
-#     oi_cumsum = (
-#         oi_diff_filled.cumsum().cast(pl.Float32).alias(OI_DIFF_CUMSUM_COLUMN)
-#     )
-
-#     return df.with_columns(
-#         iv_diff,
-#         iv_cumsum,
-#         delta_diff,
-#         delta_cumsum,
-#         vega_diff,
-#         vega_cumsum,
-#         theta_diff,
-#         theta_cumsum,
-#         tv_diff,
-#         tv_cumsum,
-#         tv_vol_prod,
-#         tv_vol_prod_cumsum,
-#         oi_diff,
-#         oi_cumsum,
-#     )
-
-
 
 
 def transform_candles_for_today(

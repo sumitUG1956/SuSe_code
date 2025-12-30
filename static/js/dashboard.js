@@ -125,69 +125,9 @@ function resetStrikeColors() {
     nextColorIndex = 0;
 }
 
-// ============== AUTHENTICATION ==============
-
-async function checkAuth() {
-    const token = localStorage.getItem('authToken') || sessionStorage.getItem('authToken');
-    
-    if (!token) {
-        window.location.replace('/login');
-        return false;
-    }
-    
-    try {
-        const response = await fetch('/api/auth/verify', {
-            headers: { 'Authorization': `Bearer ${token}` }
-        });
-        
-        if (!response.ok) {
-            localStorage.removeItem('authToken');
-            localStorage.removeItem('userName');
-            sessionStorage.removeItem('authToken');
-            sessionStorage.removeItem('userName');
-            window.location.replace('/login');
-            return false;
-        }
-        
-        // Set user info in UI
-        const data = await response.json();
-        const userName = localStorage.getItem('userName') || sessionStorage.getItem('userName') || data.user?.name || 'User';
-        const userNameEl = document.getElementById('userName');
-        const userAvatarEl = document.getElementById('userAvatar');
-        
-        if (userNameEl) userNameEl.textContent = userName;
-        if (userAvatarEl) userAvatarEl.textContent = userName.charAt(0).toUpperCase();
-        
-        return true;
-    } catch (error) {
-        console.error('Auth check failed:', error);
-        return true; // Allow if network error (offline mode)
-    }
-}
-
-function logout() {
-    localStorage.removeItem('authToken');
-    localStorage.removeItem('userName');
-    sessionStorage.removeItem('authToken');
-    sessionStorage.removeItem('userName');
-    
-    // Clear history and redirect
-    window.location.replace('/login');
-}
-
 // ============== INITIALIZATION ==============
 
 document.addEventListener('DOMContentLoaded', async () => {
-    // Check authentication first
-    const isAuthenticated = await checkAuth();
-    if (!isAuthenticated) return;
-    
-    // Setup logout button
-    const logoutBtn = document.getElementById('logoutBtn');
-    if (logoutBtn) {
-        logoutBtn.addEventListener('click', logout);
-    }
-    
     initCharts();
     initEventListeners();
     loadData();
@@ -240,7 +180,7 @@ function initCharts() {
             lineColor: '#30363d',
             tickColor: '#30363d',
             labels: {
-                style: { color: '#8b949e', fontSize: '10px' },
+                style: { color: '#c9d1d9', fontSize: '12px', fontWeight: '500' },
                 formatter: function() {
                     return Highcharts.dateFormat('%H:%M', this.value);
                 }
@@ -254,7 +194,7 @@ function initCharts() {
         yAxis: {
             gridLineColor: '#30363d',
             labels: {
-                style: { color: '#8b949e', fontSize: '10px' },
+                style: { color: '#c9d1d9', fontSize: '12px', fontWeight: '500' },
                 formatter: function() { return this.value.toFixed(1); }
             },
             crosshair: {
@@ -303,7 +243,7 @@ function initCharts() {
         state.charts[config.id] = Highcharts.chart(container, {
             chart: {
                 type: 'line',
-                height: 400,
+                height: 550,
                 zoomType: undefined,  // Disabled by default, enabled via button
                 resetZoomButton: {
                     theme: {
@@ -495,8 +435,8 @@ function updateCrosshairTime(timestamp) {
     const timeEl = document.getElementById('crosshairTime');
     if (timeEl && timestamp) {
         const date = new Date(timestamp);
-        const hours = String(date.getHours()).padStart(2, '0');
-        const mins = String(date.getMinutes()).padStart(2, '0');
+        const hours = String(date.getUTCHours()).padStart(2, '0');
+        const mins = String(date.getUTCMinutes()).padStart(2, '0');
         timeEl.textContent = `${hours}:${mins}`;
     }
 }

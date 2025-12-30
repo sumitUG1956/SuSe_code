@@ -35,7 +35,7 @@ THREE_MINUTES = 580
 # Trading day cadence windows (IST) - Market hours 9:15 to 15:30
 # TODO: Remove 23:59 window after testing - only for debugging
 WINDOWS = [
-    (time(9, 15), time(9, 45), 30),
+    (time(9, 16), time(9, 45), 30),
     (time(9, 45), time(13, 45), 30),
     (time(13, 45), time(15, 30), 30),
     (time(15, 30), time(23, 59), 3000),  # DEBUG: Remove after testing
@@ -302,6 +302,22 @@ class CandleFetcher:
                 
         except Exception as e:
             log_error(f"[CandleFetcher] Combined normalization failed: {e}")
+        
+        # Auto normalize all futures after fetch cycle
+        try:
+            from futures_normalization import normalize_all_futures, get_futures_normalized_data
+            normalize_all_futures()
+            log_info("[CandleFetcher] Futures normalization completed")
+            
+            # Broadcast futures update to WebSocket clients
+            if not self._stop.is_set():
+                try:
+                    from fast_api import broadcast_futures_update
+                    await broadcast_futures_update()
+                except Exception as ws_err:
+                    log_error(f"[CandleFetcher] Futures WebSocket broadcast failed: {ws_err}")
+        except Exception as e:
+            log_error(f"[CandleFetcher] Futures normalization failed: {e}")
         
         return True
 

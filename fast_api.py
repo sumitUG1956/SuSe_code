@@ -5,13 +5,15 @@ import signal
 import sys
 import json
 import re
+from datetime import datetime, time as time_cls
 from pathlib import Path
 from typing import Set, Optional
+from zoneinfo import ZoneInfo
 
 from fastapi import FastAPI, HTTPException, Response, WebSocket, WebSocketDisconnect, Request, Header, Depends
 from fastapi.staticfiles import StaticFiles
 from fastapi.responses import HTMLResponse, FileResponse, RedirectResponse
-from pydantic import BaseModel, EmailStr
+from pydantic import BaseModel
 import uvicorn
 from starlette.concurrency import run_in_threadpool
 
@@ -20,33 +22,22 @@ from extract import refresh_payload_in_memory, run_report_script
 from market_fetcher import CandleFetcher
 from state import get_payload, get_numpy_candle_snapshot
 from combined_normalization import normalize_index_options, get_normalized_index_data, get_metadata_only, INDEX_NAMES
+from futures_normalization import normalize_all_futures, get_futures_normalized_data, get_futures_metadata, ALL_FUTURES
 import pandas as pd
 import numpy as np
 from logger import log_error, log_info
 from live_updates import subscribe, unsubscribe
-from auth import register_user, login_user, verify_auth_token
 
 # WebSocket connections for normalized data
 _normalized_ws_clients: Set[WebSocket] = set()
 _normalized_ws_subscriptions: dict = {}  # ws -> index_name
 
+# WebSocket connections for futures data
+_futures_ws_clients: Set[WebSocket] = set()
+_futures_ws_subscriptions: dict = {}  # ws -> {smooth: bool}
+
 candle_fetcher = None
 _fetcher_lock = asyncio.Lock()
-
-
-# ---- Pydantic Models for Auth -----------------------------------------------
-
-class RegisterRequest(BaseModel):
-    first_name: str
-    last_name: str
-    email: str
-    phone: str
-    password: str
-
-
-class LoginRequest(BaseModel):
-    email: str
-    password: str
 
 
 def refresh_payload_and_report():
@@ -81,94 +72,120 @@ async def chrome_devtools():
     return Response(content="{}", media_type="application/json")
 
 
-# ---- Authentication Routes --------------------------------------------------
+# ---- Dashboard Routes -------------------------------------------------------
 
 @app.get("/", response_class=HTMLResponse)
 async def root():
-    """Redirect to login page."""
-    return RedirectResponse(url="/login", status_code=302)
+    """Redirect to dashboard."""
+    return RedirectResponse(url="/dashboard", status_code=302)
 
-
-@app.get("/login", response_class=HTMLResponse)
-async def serve_login():
-    """Serve the login page."""
-    html_path = BASE_DIR / "templates" / "login.html"
-    if not html_path.exists():
-        raise HTTPException(status_code=404, detail="Login page not found")
-    return FileResponse(html_path)
-
-
-@app.get("/register", response_class=HTMLResponse)
-async def serve_register():
-    """Serve the registration page."""
-    html_path = BASE_DIR / "templates" / "register.html"
-    if not html_path.exists():
-        raise HTTPException(status_code=404, detail="Register page not found")
-    return FileResponse(html_path)
-
-
-@app.post("/api/auth/register")
-async def api_register(req: RegisterRequest):
-    """Register a new user."""
-    success, message, user_data = register_user(
-        first_name=req.first_name,
-        last_name=req.last_name,
-        email=req.email,
-        phone=req.phone,
-        password=req.password
-    )
-    
-    if not success:
-        raise HTTPException(status_code=400, detail=message)
-    
-    return {"message": message, "user": user_data}
-
-
-@app.post("/api/auth/login")
-async def api_login(req: LoginRequest):
-    """Authenticate user and return token."""
-    success, message, data = login_user(req.email, req.password)
-    
-    if not success:
-        raise HTTPException(status_code=401, detail=message)
-    
-    return data
-
-
-@app.get("/api/auth/verify")
-async def api_verify_token(authorization: Optional[str] = Header(None)):
-    """Verify authentication token."""
-    if not authorization:
-        raise HTTPException(status_code=401, detail="No token provided")
-    
-    is_valid, user_data = verify_auth_token(authorization)
-    
-    if not is_valid:
-        raise HTTPException(status_code=401, detail="Invalid or expired token")
-    
-    return {"valid": True, "user": user_data}
-
-
-# ---- Protected Dashboard Route ----------------------------------------------
 
 @app.get("/dashboard", response_class=HTMLResponse)
 async def serve_dashboard():
-    """Serve the dashboard HTML page (requires authentication via JS)."""
+    """Serve the options dashboard HTML page."""
     html_path = BASE_DIR / "templates" / "dashboard.html"
     if not html_path.exists():
         raise HTTPException(status_code=404, detail="Dashboard not found")
     return FileResponse(html_path)
 
 
+@app.get("/futures-dashboard", response_class=HTMLResponse)
+async def serve_futures_dashboard():
+    """Serve the futures dashboard HTML page."""
+    html_path = BASE_DIR / "templates" / "futures.html"
+    if not html_path.exists():
+        raise HTTPException(status_code=404, detail="Futures dashboard not found")
+    return FileResponse(html_path)
+
+
 # ---- Lifecycle --------------------------------------------------------------
+
+IST = ZoneInfo("Asia/Kolkata")
+MARKET_READY_TIME = time_cls(9, 16, 0)  # 09:16:00 IST
+
+
+async def wait_until_market_ready():
+    """
+    Wait until 09:16 IST before fetching spot prices.
+    
+    - Weekend (Sat/Sun): Raise error with faketime instructions
+    - Before 09:16: Wait with countdown
+    - After 09:16 (until midnight): Proceed immediately
+    """
+    now = datetime.now(tz=IST)
+    today = now.date()
+    weekday = now.weekday()  # 0=Monday, 5=Saturday, 6=Sunday
+    
+    # Check for weekend
+    if weekday in (5, 6):  # Saturday or Sunday
+        day_name = "Saturday" if weekday == 5 else "Sunday"
+        print(f"\n{'='*60}")
+        print(f"⚠️  TODAY IS {day_name.upper()} - MARKET IS CLOSED")
+        print(f"{'='*60}")
+        print(f"\n💡 For debugging on weekends, use faketime:")
+        print(f"")
+        print(f"   # Install faketime (if not installed):")
+        print(f"   sudo pacman -S libfaketime  # Arch")
+        print(f"   sudo apt install faketime   # Ubuntu/Debian")
+        print(f"")
+        print(f"   # Run server with fake date (last trading day):")
+        print(f"   faketime '2025-12-27 09:16:00' python fast_api.py")
+        print(f"")
+        print(f"{'='*60}\n")
+        raise RuntimeError(f"Market is closed on {day_name}. Use faketime for debugging.")
+    
+    # Calculate target time: 09:16:00 IST today
+    target_time = datetime.combine(today, MARKET_READY_TIME, tzinfo=IST)
+    
+    if now >= target_time:
+        # Already past 09:16 - proceed immediately
+        log_info(f"[startup] Market ready (current time: {now.strftime('%H:%M:%S')} IST)")
+        return
+    
+    # Before 09:16 - wait with countdown
+    wait_seconds = (target_time - now).total_seconds()
+    wait_minutes = wait_seconds / 60
+    
+    print(f"\n{'='*60}")
+    print(f"⏳ WAITING FOR MARKET TO OPEN")
+    print(f"{'='*60}")
+    print(f"   Current time: {now.strftime('%H:%M:%S')} IST")
+    print(f"   Target time:  {MARKET_READY_TIME.strftime('%H:%M:%S')} IST")
+    print(f"   Wait time:    {wait_minutes:.1f} minutes")
+    print(f"{'='*60}\n")
+    
+    # Wait with countdown in terminal
+    while True:
+        now = datetime.now(tz=IST)
+        if now >= target_time:
+            break
+        
+        remaining = (target_time - now).total_seconds()
+        mins = int(remaining // 60)
+        secs = int(remaining % 60)
+        
+        # Print countdown on same line (carriage return)
+        print(f"\r⏳ Countdown: {mins:02d}:{secs:02d} remaining until 09:16 IST...  ", end="", flush=True)
+        await asyncio.sleep(1)
+    
+    print(f"\r✅ 09:16 IST reached! Starting...                              ")
+    print(f"{'='*60}\n")
 
 
 @app.on_event("startup")
 async def on_startup():
-    # Clean → download+extract → build+store payload in RAM
+    # Step 1: Clean and download instruments (can happen anytime)
     await run_in_threadpool(clean_previous_downloads)
     await run_in_threadpool(download_and_extract)
+    log_info("[startup] Instruments downloaded")
+    
+    # Step 2: Wait until 09:16 IST (market ready)
+    await wait_until_market_ready()
+    
+    # Step 3: Fetch spot prices and build payload
     await run_in_threadpool(refresh_payload_and_report)
+    
+    # Step 4: Start candle fetcher
     await ensure_candle_fetcher()
     log_info("[startup] Payload ready and candle fetcher running")
 
@@ -760,6 +777,201 @@ async def broadcast_normalized_update(index_name: str):
     for ws in disconnected:
         _normalized_ws_clients.discard(ws)
         _normalized_ws_subscriptions.pop(ws, None)
+
+
+# ---- Futures API Endpoints --------------------------------------------------
+
+@app.get("/api/futures/metadata")
+async def get_futures_metadata_api():
+    """
+    Get metadata for futures dashboard (fast initial load).
+    Returns available futures list and time_seconds.
+    """
+    metadata = await run_in_threadpool(get_futures_metadata)
+    return metadata
+
+
+@app.get("/api/futures/normalized")
+async def get_futures_normalized_api(smooth: bool = True):
+    """
+    Get normalized futures data.
+    
+    Args:
+        smooth: If True, returns EMA smoothed data (_ema columns). If False, returns raw data.
+    
+    Returns: {
+        normalized: {
+            "NIFTY": {fut_spot_diff_cumsum: [...], oi_diff_cumsum: [...]},
+            "RELIANCE": {...},
+            ...
+        },
+        time_seconds: [...],
+        index_futures: [...],
+        equity_futures: [...]
+    }
+    """
+    # Get normalized data
+    normalized = await run_in_threadpool(get_futures_normalized_data)
+    
+    if not normalized:
+        # Try to compute
+        normalized = await run_in_threadpool(normalize_all_futures)
+    
+    if not normalized:
+        raise HTTPException(status_code=404, detail="No futures data available")
+    
+    # Get metadata
+    metadata = await run_in_threadpool(get_futures_metadata)
+    
+    # Filter by smooth mode
+    filtered_normalized = {}
+    for symbol, data in normalized.items():
+        if smooth:
+            # Keep only _ema columns
+            filtered_normalized[symbol] = {k: v for k, v in data.items() if k.endswith('_ema')}
+        else:
+            # Keep only non-_ema columns
+            filtered_normalized[symbol] = {k: v for k, v in data.items() if not k.endswith('_ema')}
+    
+    # Convert numpy arrays to lists
+    normalized_json = {}
+    for symbol, data in filtered_normalized.items():
+        normalized_json[symbol] = {}
+        for col_name, values in data.items():
+            if isinstance(values, np.ndarray):
+                clean = [None if np.isnan(v) else round(float(v), 2) for v in values]
+                normalized_json[symbol][col_name] = clean
+            else:
+                normalized_json[symbol][col_name] = values
+    
+    return {
+        "normalized": normalized_json,
+        "time_seconds": metadata.get("time_seconds", []),
+        "index_futures": metadata.get("index_futures", []),
+        "equity_futures": metadata.get("equity_futures", []),
+        "smooth": smooth,
+    }
+
+
+@app.websocket("/ws/futures")
+async def futures_ws(websocket: WebSocket):
+    """
+    WebSocket endpoint for real-time futures data updates.
+    
+    Client sends: {"action": "subscribe", "smooth": true}
+    Server sends: {"type": "update", "normalized": {...}, ...}
+    """
+    await websocket.accept()
+    _futures_ws_clients.add(websocket)
+    
+    try:
+        while True:
+            data = await websocket.receive_json()
+            
+            if data.get("action") == "subscribe":
+                smooth = data.get("smooth", True)
+                _futures_ws_subscriptions[websocket] = {"smooth": smooth}
+                log_info(f"[FuturesWS] Client subscribed smooth={smooth}")
+                
+                # Send current data immediately
+                normalized = await run_in_threadpool(get_futures_normalized_data)
+                metadata = await run_in_threadpool(get_futures_metadata)
+                
+                if normalized:
+                    # Filter by smooth mode
+                    filtered_normalized = {}
+                    for symbol, symbol_data in normalized.items():
+                        if smooth:
+                            filtered_normalized[symbol] = {k: v for k, v in symbol_data.items() if k.endswith('_ema')}
+                        else:
+                            filtered_normalized[symbol] = {k: v for k, v in symbol_data.items() if not k.endswith('_ema')}
+                    
+                    # Convert to JSON
+                    normalized_json = {}
+                    for symbol, symbol_data in filtered_normalized.items():
+                        normalized_json[symbol] = {}
+                        for col_name, values in symbol_data.items():
+                            if isinstance(values, np.ndarray):
+                                clean = [None if np.isnan(v) else round(float(v), 2) for v in values]
+                                normalized_json[symbol][col_name] = clean
+                            else:
+                                normalized_json[symbol][col_name] = values
+                    
+                    await websocket.send_json({
+                        "type": "update",
+                        "normalized": normalized_json,
+                        "time_seconds": metadata.get("time_seconds", []),
+                        "index_futures": metadata.get("index_futures", []),
+                        "equity_futures": metadata.get("equity_futures", []),
+                    })
+    
+    except WebSocketDisconnect:
+        pass
+    except Exception as e:
+        log_error(f"[FuturesWS] Error: {e}")
+    finally:
+        _futures_ws_clients.discard(websocket)
+        _futures_ws_subscriptions.pop(websocket, None)
+
+
+async def broadcast_futures_update():
+    """
+    Broadcast futures normalized data update to all subscribed WebSocket clients.
+    Call this after futures normalization completes.
+    """
+    if not _futures_ws_clients:
+        return
+    
+    normalized = await run_in_threadpool(get_futures_normalized_data)
+    if not normalized:
+        return
+    
+    metadata = await run_in_threadpool(get_futures_metadata)
+    
+    disconnected = []
+    for ws in _futures_ws_clients:
+        sub = _futures_ws_subscriptions.get(ws)
+        if not sub:
+            continue
+        
+        smooth = sub.get("smooth", True)
+        
+        # Filter by smooth mode
+        filtered_normalized = {}
+        for symbol, symbol_data in normalized.items():
+            if smooth:
+                filtered_normalized[symbol] = {k: v for k, v in symbol_data.items() if k.endswith('_ema')}
+            else:
+                filtered_normalized[symbol] = {k: v for k, v in symbol_data.items() if not k.endswith('_ema')}
+        
+        # Convert to JSON
+        normalized_json = {}
+        for symbol, symbol_data in filtered_normalized.items():
+            normalized_json[symbol] = {}
+            for col_name, values in symbol_data.items():
+                if isinstance(values, np.ndarray):
+                    clean = [None if np.isnan(v) else round(float(v), 2) for v in values]
+                    normalized_json[symbol][col_name] = clean
+                else:
+                    normalized_json[symbol][col_name] = values
+        
+        message = {
+            "type": "update",
+            "normalized": normalized_json,
+            "time_seconds": metadata.get("time_seconds", []),
+            "index_futures": metadata.get("index_futures", []),
+            "equity_futures": metadata.get("equity_futures", []),
+        }
+        
+        try:
+            await ws.send_json(message)
+        except Exception:
+            disconnected.append(ws)
+    
+    # Cleanup disconnected
+    for ws in disconnected:
+        _futures_ws_clients.discard(ws)
+        _futures_ws_subscriptions.pop(ws, None)
 
 
 if __name__ == "__main__":

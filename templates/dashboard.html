@@ -12,23 +12,6 @@
     <script src="https://code.highcharts.com/stock/highstock.js"></script>
     <script src="https://code.highcharts.com/stock/modules/exporting.js"></script>
     
-    <!-- Auth Check - Runs before page renders -->
-    <script>
-        (function() {
-            // Prevent back button after logout
-            window.history.pushState(null, '', window.location.href);
-            window.onpopstate = function() {
-                window.history.pushState(null, '', window.location.href);
-            };
-            
-            // Check authentication
-            const token = localStorage.getItem('authToken') || sessionStorage.getItem('authToken');
-            if (!token) {
-                window.location.replace('/login');
-            }
-        })();
-    </script>
-    
     <style>
         :root {
             --bg-primary: #0d1117;
@@ -105,6 +88,28 @@
             background: var(--accent-blue);
             color: white;
             border-color: var(--accent-blue);
+        }
+        
+        .nav-link-btn {
+            padding: 6px 14px;
+            border: 1px solid var(--border-color);
+            border-radius: 6px;
+            background: var(--bg-tertiary);
+            color: #d29922;
+            cursor: pointer;
+            font-size: 12px;
+            font-weight: 500;
+            transition: all 0.2s ease;
+            text-decoration: none;
+            display: inline-flex;
+            align-items: center;
+            gap: 6px;
+        }
+        
+        .nav-link-btn:hover {
+            background: #d29922;
+            color: white;
+            border-color: #d29922;
         }
         
         .header-right {
@@ -361,7 +366,7 @@
         }
         
         .chart-box {
-            height: 400px;
+            height: 550px;
             width: 100%;
             position: relative;
             z-index: 1;
@@ -704,6 +709,14 @@
                 <button class="index-tab" data-index="BANKNIFTY">BANKNIFTY</button>
                 <button class="index-tab" data-index="SENSEX">SENSEX</button>
             </div>
+            <a href="/futures-dashboard" target="_blank" class="nav-link-btn" title="Open Futures Dashboard in new tab">
+                📈 Futures
+                <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                    <path d="M18 13v6a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h6"></path>
+                    <polyline points="15 3 21 3 21 9"></polyline>
+                    <line x1="10" y1="14" x2="21" y2="3"></line>
+                </svg>
+            </a>
         </div>
         <div class="header-right">
             <button class="display-mode-btn" id="zoomModeBtn" onclick="toggleZoomMode()" title="Enable drag-to-zoom">🔍 Zoom Off</button>
@@ -712,18 +725,6 @@
             <div class="status-indicator">
                 <span class="status-dot" id="statusDot"></span>
                 <span id="statusText">Disconnected</span>
-            </div>
-            <div class="user-menu">
-                <div class="user-avatar" id="userAvatar">U</div>
-                <span class="user-name" id="userName">User</span>
-                <button class="logout-btn" id="logoutBtn" title="Logout">
-                    <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-                        <path d="M9 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h4"></path>
-                        <polyline points="16 17 21 12 16 7"></polyline>
-                        <line x1="21" y1="12" x2="9" y2="12"></line>
-                    </svg>
-                    Logout
-                </button>
             </div>
         </div>
     </header>
