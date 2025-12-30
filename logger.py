@@ -1,46 +1,47 @@
 #!/usr/bin/env python3
-# Shebang line - यह script को Python 3 के साथ run करने के लिए है
+# Shebang line to run this script with Python 3
 
-# LOGGER MODULE (लॉगर मॉड्यूल)
-# Purpose: Simple logging utility for info और error messages के साथ timestamps
-# यह module application में log messages को print करने के लिए use होता है
+"""
+Logger Module - Simple logging utility for application-wide logging
+Provides timestamp-prefixed INFO and ERROR level logging to stdout
+"""
 
-from datetime import datetime, timezone  # Date/time handling के लिए import
+from datetime import datetime, timezone  # For timestamp generation
 
 
 def _timestamp():
     """
-    Private function जो current UTC timestamp को ISO format में return करता है
+    Generate current UTC timestamp in ISO 8601 format
     
     Returns:
         str: ISO formatted timestamp (e.g., "2024-01-01T12:00:00+00:00")
     
-    Purpose: सभी log messages में consistent timestamp add करने के लिए
+    Usage: Internal helper for log functions to add consistent timestamps
     """
-    return datetime.now(tz=timezone.utc).isoformat()  # Current time को UTC में ISO format में convert करो
+    return datetime.now(tz=timezone.utc).isoformat()  # Get current time in UTC and convert to ISO string
 
 
 def log_info(message: str):
     """
-    Info level message को log करो (informational messages के लिए)
+    Log an informational message with timestamp
     
     Args:
-        message: Log करने वाला informational message
+        message: The informational message to log
     
-    Usage: log_info("Server started successfully")
-    Output: [INFO 2024-01-01T12:00:00+00:00] Server started successfully
+    Output format: [INFO <timestamp>] <message>
+    Example: [INFO 2024-01-01T12:00:00+00:00] Server started successfully
     """
-    print(f"[INFO { _timestamp()}] {message}")  # INFO prefix के साथ message को timestamp के साथ print करो
+    print(f"[INFO { _timestamp()}] {message}")  # Print with INFO prefix and timestamp
 
 
 def log_error(message: str):
     """
-    Error level message को log करो (error reporting के लिए)
+    Log an error message with timestamp
     
     Args:
-        message: Log करने वाला error message
+        message: The error message to log
     
-    Usage: log_error("Failed to fetch data")
-    Output: [ERROR 2024-01-01T12:00:00+00:00] Failed to fetch data
+    Output format: [ERROR <timestamp>] <message>
+    Example: [ERROR 2024-01-01T12:00:00+00:00] Failed to fetch data
     """
-    print(f"[ERROR { _timestamp()}] {message}")  # ERROR prefix के साथ message को timestamp के साथ print करो
+    print(f"[ERROR { _timestamp()}] {message}")  # Print with ERROR prefix and timestamp

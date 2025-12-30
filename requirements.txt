@@ -1,97 +1,13 @@
-# ============================================================================
-# REQUIREMENTS.TXT - Python Dependencies (पायथन डिपेंडेंसीज़)
-# ============================================================================
-#
-# Purpose: इस project में use होने वाली सभी Python packages की list
-# Installation: pip install -r requirements.txt
-#
-# ============================================================================
-
-# WEB FRAMEWORK & SERVER
-# ----------------------
-# FastAPI - Modern, fast async web framework for building REST APIs
-# उपयोग: /api/normalized, /api/futures जैसे endpoints बनाने के लिए
 fastapi
-
-# Uvicorn - ASGI server जो FastAPI को run करता है
-# [standard] flag additional features enable करता है (websockets, watchfiles)
-# उपयोग: Application server के रूप में (port 8000 पर)
 uvicorn[standard]
-
-# HTTP CLIENT
-# -----------
-# aiohttp - Async HTTP client/server library
-# उपयोग: Upstox API से asynchronously candle data fetch करने के लिए (market_fetcher.py)
 aiohttp
-
-# DATA PROCESSING & NUMERICAL COMPUTING
-# --------------------------------------
-# NumPy - Fundamental package for numerical computing और arrays
-# उपयोग: Large candle data arrays को efficiently store और process करने के लिए (state.py)
 numpy
-
-# Pandas - Data analysis और manipulation library (DataFrames)
-# उपयोग: Expanding window calculations के लिए (combined_normalization.py में IQR/z-score)
 pandas
-
-# Polars - Fast DataFrame library (Pandas का modern alternative, Rust में written)
-# उपयोग: Candle processing और transformation में (candle_processing.py)
 polars
-
-# PERFORMANCE OPTIMIZATION
-# ------------------------
-# Numba - JIT compiler जो Python को machine code में compile करता है
-# उपयोग: Mathematical calculations को fast करने के लिए (if used in future)
-# Note: Currently not actively used, लेकिन future optimizations के लिए available
-numba
-
-# WEBSOCKET CLIENT
-# ----------------
-# websocket-client - WebSocket client library
-# उपयोग: Real-time data streaming के लिए (live_updates.py)
 websocket-client
-
-# GUI (Optional - Desktop Application)
-# ------------------------------------
-# PyQt6 - Cross-platform GUI toolkit
-# उपयोग: Desktop visualization app बनाने के लिए (if present)
+numba
 PyQt6
-
-# pyqtgraph - Scientific graphics और GUI library built on PyQt/PySide
-# उपयोग: Real-time charts और graphs display करने के लिए
 pyqtgraph
-
-# HTTP UTILITIES
-# --------------
-# requests - Simple HTTP library for Python
-# उपयोग: Synchronous HTTP requests के लिए (download_extract.py में alternative)
 requests
-
-# CONFIGURATION
-# -------------
-# python-dotenv - Environment variables को .env file से load करने के लिए
-# उपयोग: API keys और secrets को securely manage करने के लिए
 python-dotenv
-
-# DATA VALIDATION
-# ---------------
-# Pydantic - Data validation और settings management using Python type hints
-# उपयोग: FastAPI request/response models के लिए (automatic validation)
 pydantic
-
-# ============================================================================
-# INSTALLATION NOTES (इंस्टालेशन नोट्स)
-# ============================================================================
-#
-# 1. Create virtual environment:
-#    python -m venv venv
-#    source venv/bin/activate  # Linux/Mac
-#    venv\Scripts\activate     # Windows
-#
-# 2. Install all dependencies:
-#    pip install -r requirements.txt
-#
-# 3. Verify installation:
-#    pip list
-#
-# ============================================================================

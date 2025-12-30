@@ -1,123 +1,27 @@
-# ============================================================================
-# .GITIGNORE - Git Ignore Patterns (गिट इग्नोर पैटर्न)
-# ============================================================================
-#
-# Purpose: यह file बताती है कि Git को कौनसी files/folders track नहीं करनी हैं
-# Reason: Temporary files, build artifacts, और sensitive data को repository में commit नहीं करना चाहिए
-#
-# ============================================================================
-
-# PYTHON RUNTIME FILES
-# --------------------
-# Purpose: Python द्वारा generate की गई temporary और compiled files
-
-# __pycache__/ - Python bytecode cache directory
-# Reason: हर .py file के लिए .pyc cached bytecode बनता है (faster imports के लिए)
+# Python
 __pycache__/
-
-# *.py[cod] - Python bytecode files (.pyc, .pyo, .pyd)
-# .pyc = compiled bytecode, .pyo = optimized bytecode, .pyd = Python DLL
 *.py[cod]
-
-# *$py.class - Java-style class files (Jython)
-# Reason: Jython (Python on JVM) class files
 *$py.class
-
-# *.so - Shared object files (compiled C extensions)
-# Reason: Native compiled libraries (Linux/Unix systems पर)
 *.so
-
-# .Python - Python symlink या metadata file
 .Python
-
-# *.egg-info/ - Python package metadata directories
-# Reason: Package installation के दौरान create होती है
 *.egg-info/
-
-# .eggs/ - Egg files (older Python package format)
 .eggs/
-
-# dist/ - Distribution files (built packages)
-# Reason: `python setup.py bdist_wheel` से generate होते हैं
 dist/
-
-# build/ - Build artifacts directory
-# Reason: Package build के दौरान intermediate files
 build/
 
-# VIRTUAL ENVIRONMENT
-# -------------------
-# Purpose: Python virtual environments को ignore करना
-
-# venv/ - Standard virtual environment name
-# Reason: `python -m venv venv` command से बनता है
+# Virtual Environment
 venv/
-
-# env/ - Alternative venv name
 env/
-
-# .venv/ - Hidden venv directory
 .venv/
 
-# IDE & EDITOR FILES
-# ------------------
-# Purpose: Editor/IDE specific configuration files
-
-# .vscode/ - Visual Studio Code settings
-# Reason: IDE-specific settings जो user-specific होती हैं
+# IDE
 .vscode/
-
-# .idea/ - PyCharm/IntelliJ IDEA settings
 .idea/
-
-# *.swp, *.swo - Vim temporary files
-# Reason: Vim editor के swap files
 *.swp
 *.swo
 
-# LOG FILES
-# ---------
-# Purpose: Runtime log files
-
-# *.log - All log files
-# Reason: Application logs जो development/testing में generate होती हैं
-# Note: Production logs को gitignore में रखना security के लिए important है
+# Logs
 *.log
 
-# DATA FILES (OPTIONAL - COMMENTED)
-# ----------------------------------
-# Purpose: Downloaded instrument data files
-
-# data/ - Data directory (currently commented)
-# Reason: Upstox से downloaded instruments data (complete.json, complete.json.gz)
-# 
-# Why commented:
-# - अगर data/ ignore करोगे तो हर user को खुद download करना पड़ेगा
-# - अगर data/ commit करोगे तो repository size बढ़ेगी (but first-run fast होगा)
-#
-# Recommendation: अगर data sensitive नहीं है और frequently change नहीं होता, तो commit कर सकते हैं
-# अगर daily updates हैं या sensitive है, तो uncomment करो
+# Data files (agar sensitive hai)
 # data/
-
-# ============================================================================
-# ADDITIONAL PATTERNS (जो add करने पर consider करें)
-# ============================================================================
-#
-# OS Files:
-# .DS_Store          # macOS folder metadata
-# Thumbs.db          # Windows thumbnail cache
-#
-# Environment:
-# .env               # Environment variables file (secrets)
-# .env.local         # Local env overrides
-#
-# Testing:
-# .pytest_cache/     # Pytest cache directory
-# .coverage          # Code coverage reports
-# htmlcov/           # HTML coverage reports
-#
-# Database:
-# *.db               # SQLite databases
-# *.sqlite           # SQLite databases
-#
-# ============================================================================

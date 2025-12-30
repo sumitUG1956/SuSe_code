@@ -1,170 +1,127 @@
 #!/usr/bin/env python3
-# Shebang line - Python 3 से script run करने के लिए
 
 """
-DOWNLOAD & EXTRACT MODULE (डाउनलोड और एक्सट्रैक्ट मॉड्यूल)
-========================================================
-
-Purpose: Upstox से complete instrument list को download और extract करना
-यह module daily trading instruments की master list को Upstox API से fetch करता है
-
-Process:
-1. Upstox servers से compressed .json.gz file download करो
-2. File को extract करके plain JSON बनाओ
-3. data/ directory में store करो
-
-Data Contains: सभी NSE/BSE instruments की information (stocks, indices, options, futures)
-- Instrument keys, trading symbols, expiry dates, strike prices, etc.
+Download and Extract Module - Fetches Upstox instrument list
+Downloads compressed instrument data from Upstox API and extracts it locally
 """
 
-import gzip  # .gz compressed files को handle करने के लिए
-import shutil  # File operations (copy, move) के लिए
-from pathlib import Path  # File paths को handle करने के लिए
-from urllib.request import Request, urlopen  # HTTP requests के लिए
+import gzip  # For decompressing .gz files
+import shutil  # For file operations
+from pathlib import Path  # For filesystem path handling
+from urllib.request import Request, urlopen  # For HTTP requests
 
-# CONFIGURATION CONSTANTS
-
-# Upstox API URL जहां से instrument list download होती है (compressed format में)
+# Upstox API URL for complete instrument list (compressed JSON)
 UPSTOX_URL = "https://assets.upstox.com/market-quote/instruments/exchange/complete.json.gz"
-
-# Local directory जहां downloaded files store होंगी
-DATA_DIR = Path("data")  # "./data" folder
+# Local directory for storing downloaded files
+DATA_DIR = Path("data")
 
 
 def download_file(url, destination):
     """
-    URL से file download करके local destination पर save करो (streaming copy के साथ)
-    
-    Purpose: Large files को efficiently download करना without loading entire file into memory
+    Download a file from URL and save to local destination
     
     Args:
-        url: Download URL (string) - जहां से file download करनी है
-        destination: Local file path (Path object) - जहां file save करनी है
+        url: Source URL to download from
+        destination: Path object where file should be saved
     
     Process:
-        1. Destination के parent directories create करो (अगर exist नहीं करती)
-        2. URL को HTTP request में wrap करो (proper headers के साथ)
-        3. Remote file को chunks में read करके local file में write करो
+        1. Create parent directories if they don't exist
+        2. Create HTTP request with User-Agent header
+        3. Stream download to local file (memory efficient)
     
-    Example:
-        download_file("https://example.com/data.gz", Path("data/data.gz"))
-    
-    Note: shutil.copyfileobj() streaming copy करता है - memory efficient!
+    Note: Uses streaming copy to handle large files efficiently
     """
-    destination.parent.mkdir(parents=True, exist_ok=True)  # Parent directories create करो (if not exist), exist_ok=True means error नहीं अगर already exist
-    request = Request(url, headers={"User-Agent": "Mozilla/5.0"})  # HTTP request बनाओ User-Agent header के साथ (कुछ servers इसकी requirement होती है)
-    with urlopen(request) as response, destination.open("wb") as local_file:  # Remote URL open करो और local file open करो write binary mode में
-        shutil.copyfileobj(response, local_file)  # Remote से local में data copy करो (streaming - chunk by chunk)
+    destination.parent.mkdir(parents=True, exist_ok=True)  # Create directories if needed
+    request = Request(url, headers={"User-Agent": "Mozilla/5.0"})  # HTTP request with headers
+    # Open remote URL and local file, then copy data in chunks
+    with urlopen(request) as response, destination.open("wb") as local_file:
+        shutil.copyfileobj(response, local_file)  # Stream copy (chunk by chunk)
 
 
 def extract_gzip(source, destination):
     """
-    .gz compressed file को extract करके plain file बनाओ
-    
-    Purpose: Compressed .json.gz file को decompress करके readable .json file बनाना
+    Extract a .gz compressed file to uncompressed destination
     
     Args:
-        source: Input .gz file path (Path object)
-        destination: Output uncompressed file path (Path object)
+        source: Path to .gz file
+        destination: Path where extracted file should be written
     
     Process:
-        1. Source .gz file को binary read mode में open करो
-        2. Destination file को binary write mode में open करो
-        3. Decompressed data को streaming copy करो (memory efficient)
-    
-    Example:
-        extract_gzip(Path("data/file.json.gz"), Path("data/file.json"))
-    
-    Note: gzip.open() automatically decompression handle करता है
+        Open compressed file and destination file, then stream decompress
     """
-    with gzip.open(source, "rb") as gz_file, destination.open("wb") as out_file:  # .gz file open करो read mode में और output file write mode में
-        shutil.copyfileobj(gz_file, out_file)  # Decompressed data को output file में copy करो (chunk by chunk)
+    # Open .gz file for reading and destination for writing
+    with gzip.open(source, "rb") as gz_file, destination.open("wb") as out_file:
+        shutil.copyfileobj(gz_file, out_file)  # Stream decompress (chunk by chunk)
 
 
 def clean_previous_downloads(data_dir=DATA_DIR):
     """
-    पुरानी downloaded files को delete करो (fresh download के लिए)
-    
-    Purpose: पुराने instrument data को remove करना ताकि नया fresh data download हो सके
+    Remove previously downloaded instrument files for fresh download
     
     Args:
-        data_dir: Data directory path (default: DATA_DIR)
+        data_dir: Directory containing downloaded files (default: DATA_DIR)
     
     Process:
-        1. .gz और .json दोनों files के paths बनाओ
-        2. अगर files exist करती हैं तो delete करो
+        Delete both .gz compressed file and extracted .json file if they exist
     
-    Example:
-        clean_previous_downloads()  # Deletes data/complete.json.gz and data/complete.json
-    
-    Why needed: Daily fresh data चाहिए क्योंकि instruments change होते हैं (expiry, new listings)
+    Why needed: Ensures fresh data download without stale files
     """
-    gz_path = data_dir / "complete.json.gz"  # Compressed file path
-    json_path = data_dir / "complete.json"  # Extracted JSON file path
-    for path in (gz_path, json_path):  # दोनों files के लिए iterate करो
-        if path.exists():  # अगर file exist करती है
-            path.unlink()  # File delete करो (unlink = delete का POSIX term)
+    gz_path = data_dir / "complete.json.gz"  # Path to compressed file
+    json_path = data_dir / "complete.json"  # Path to extracted JSON
+    for path in (gz_path, json_path):  # Iterate over both paths
+        if path.exists():  # If file exists
+            path.unlink()  # Delete the file
 
 
 def download_and_extract(data_dir=DATA_DIR):
     """
-    Complete workflow: Download + Extract instruments list
-    
-    Purpose: Upstox archive को download करना और extract करना (one-step process)
+    Complete workflow: download compressed file and extract it
     
     Args:
-        data_dir: Data directory जहां files save होंगी (default: DATA_DIR)
+        data_dir: Directory for storing files (default: DATA_DIR)
     
     Returns:
         tuple: (download_path, extracted_path)
-            - download_path: Downloaded .gz file का path
-            - extracted_path: Extracted .json file का path
+            - download_path: Path to downloaded .gz file
+            - extracted_path: Path to extracted .json file
     
     Process:
-        1. Download path और extracted path define करो
-        2. Upstox URL से .gz file download करो
-        3. .gz file को extract करके .json बनाओ
-        4. दोनों paths return करो
+        1. Define paths for downloaded and extracted files
+        2. Download compressed file from Upstox
+        3. Extract to plain JSON
+        4. Return both paths
     
-    Example:
+    Usage:
         gz_file, json_file = download_and_extract()
-        print(f"Downloaded: {gz_file}")
-        print(f"Extracted: {json_file}")
-    
-    Used by: fast_api.py में startup time पर और /download endpoint से
     """
-    download_path = data_dir / "complete.json.gz"  # Download होने वाली compressed file का path
-    extracted_path = download_path.with_suffix("")  # .gz suffix remove करके .json path बनाओ
+    download_path = data_dir / "complete.json.gz"  # Where to save downloaded file
+    extracted_path = download_path.with_suffix("")  # Remove .gz to get .json path
 
-    download_file(UPSTOX_URL, download_path)  # Upstox से file download करो
-    extract_gzip(download_path, extracted_path)  # Downloaded file को extract करो
-    return download_path, extracted_path  # दोनों paths return करो
+    download_file(UPSTOX_URL, download_path)  # Download from Upstox
+    extract_gzip(download_path, extracted_path)  # Extract to JSON
+    return download_path, extracted_path  # Return both file paths
 
 
 def main():
     """
-    CLI entry point - जब script directly run हो (python download_extract.py)
-    
-    Purpose: Command line से manually instruments download करने के लिए
+    CLI entry point - runs when script is executed directly
     
     Process:
-        1. पुराने downloads clean करो
-        2. नई files download और extract करो
-        3. Paths को console पर print करो (user को feedback के लिए)
+        1. Clean any previous downloads
+        2. Download and extract fresh instrument data
+        3. Print paths to console for confirmation
     
-    Example usage:
-        $ python download_extract.py
-        Downloaded to: /path/to/data/complete.json.gz
-        Extracted to: /path/to/data/complete.json
+    Usage:
+        python download_extract.py
     """
-    clean_previous_downloads()  # पुराने files delete करो
-    download_path, extracted_path = download_and_extract()  # Download और extract करो
+    clean_previous_downloads()  # Remove old files
+    download_path, extracted_path = download_and_extract()  # Download and extract
 
-    # Success messages print करो with absolute paths
-    print(f"Downloaded to: {download_path.resolve()}")  # .resolve() absolute path return करता है
+    # Print confirmation messages with absolute paths
+    print(f"Downloaded to: {download_path.resolve()}")
     print(f"Extracted to: {extracted_path.resolve()}")
 
 
-# यह check करता है कि script directly run हो रही है (not imported as module)
+# Run main() if script is executed directly (not imported)
 if __name__ == "__main__":
-    main()  # main() function call करो
+    main()
