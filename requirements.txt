@@ -1,13 +1,29 @@
-fastapi
-uvicorn[standard]
-aiohttp
-numpy
-pandas
-polars
-websocket-client
-numba
-PyQt6
-pyqtgraph
-requests
-python-dotenv
-pydantic
+# Python Dependencies for SuSe_code Project
+# Install with: pip install -r requirements.txt
+
+# Web Framework
+fastapi  # Modern async web framework for building REST APIs
+uvicorn[standard]  # ASGI server for running FastAPI (with WebSocket support)
+
+# HTTP Client
+aiohttp  # Async HTTP client for fetching candle data from Upstox API
+
+# Data Processing
+numpy  # Numerical computing library for array operations and calculations
+pandas  # Data analysis library with DataFrame support (used for expanding window calculations)
+polars  # Fast DataFrame library for candle processing and transformations
+
+# Real-time Communication
+websocket-client  # WebSocket client library for real-time data streaming
+
+# Performance
+numba  # JIT compiler for accelerating Python code (optional, for future optimizations)
+
+# GUI (Optional)
+PyQt6  # Cross-platform GUI toolkit (for desktop visualization if needed)
+pyqtgraph  # Scientific graphics library for real-time charts
+
+# Utilities
+requests  # Simple HTTP library (used in download_extract.py)
+python-dotenv  # Load environment variables from .env file
+pydantic  # Data validation using Python type hints (used by FastAPI)

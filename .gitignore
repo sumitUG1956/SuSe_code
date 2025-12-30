@@ -1,27 +1,30 @@
-# Python
-__pycache__/
-*.py[cod]
-*$py.class
-*.so
-.Python
-*.egg-info/
-.eggs/
-dist/
-build/
+# Git Ignore Patterns - Files to exclude from version control
+
+# Python Runtime Files
+__pycache__/  # Python bytecode cache directories
+*.py[cod]  # Compiled Python files (.pyc, .pyo, .pyd)
+*$py.class  # Jython class files
+*.so  # Shared object files (compiled C extensions)
+.Python  # Python symlink or metadata
+*.egg-info/  # Package metadata directories
+.eggs/  # Egg files (legacy Python package format)
+dist/  # Distribution files (built packages)
+build/  # Build artifacts directory
 
 # Virtual Environment
-venv/
-env/
-.venv/
+venv/  # Virtual environment directory
+env/  # Alternative venv name
+.venv/  # Hidden venv directory
 
-# IDE
-.vscode/
-.idea/
-*.swp
-*.swo
+# IDE and Editor Files
+.vscode/  # Visual Studio Code settings
+.idea/  # PyCharm/IntelliJ IDEA settings
+*.swp  # Vim swap files
+*.swo  # Vim swap files
 
-# Logs
-*.log
+# Log Files
+*.log  # Application log files
 
-# Data files (agar sensitive hai)
-# data/
+# Data Files (Optional - Commented)
+# data/  # Downloaded instrument data directory
+# Uncomment if data directory contains sensitive information
