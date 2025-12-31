@@ -86,6 +86,45 @@
             border-color: var(--accent-blue);
         }
         
+        .view-toggle {
+            display: flex;
+            gap: 4px;
+            background: var(--bg-tertiary);
+            padding: 3px;
+            border-radius: 8px;
+            border: 1px solid var(--border-color);
+        }
+        
+        .toggle-btn {
+            padding: 6px 14px;
+            border: none;
+            border-radius: 6px;
+            background: transparent;
+            color: var(--text-secondary);
+            cursor: pointer;
+            font-size: 12px;
+            font-weight: 500;
+            transition: all 0.2s ease;
+        }
+        
+        .toggle-btn:hover {
+            color: var(--text-primary);
+            background: var(--bg-secondary);
+        }
+        
+        .toggle-btn.active {
+            background: var(--accent-blue);
+            color: white;
+        }
+        
+        #btnBasis.active {
+            background: var(--accent-blue);
+        }
+        
+        #btnOI.active {
+            background: var(--accent-orange);
+        }
+        
         .header-right {
             display: flex;
             align-items: center;
@@ -408,6 +447,10 @@
                     <line x1="10" y1="14" x2="21" y2="3"></line>
                 </svg>
             </a>
+            <div class="view-toggle">
+                <button class="toggle-btn active" id="btnBasis" onclick="setViewMode('basis')">📊 Basis</button>
+                <button class="toggle-btn" id="btnOI" onclick="setViewMode('oi')">📈 OI</button>
+            </div>
         </div>
         <div class="header-right">
             <span class="crosshair-time" id="crosshairTime">--:--</span>

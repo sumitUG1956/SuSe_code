@@ -25,7 +25,8 @@ const state = {
     ws: null,
     wsConnected: false,
     
-    // Display mode removed - always use raw normalized data
+    // View mode: 'basis' or 'oi'
+    viewMode: 'basis',
 };
 
 // Line colors
@@ -33,6 +34,11 @@ const COLORS = {
     basis: '#58a6ff',  // Blue for FutSpotDiff (Basis)
     oi: '#f0883e',     // Orange for OI
 };
+
+// Market timing constants
+const BASE_DATE = Date.UTC(2025, 0, 1, 0, 0, 0);
+const MARKET_OPEN = 33300;   // 9:15 AM IST
+const MARKET_CLOSE = 55800;  // 3:30 PM IST
 
 // ============== INITIALIZATION ==============
 
@@ -187,12 +193,12 @@ function createChartContainer(symbol, type) {
             <span class="chart-value" id="val-${symbol}">--</span>
         </div>
         <div class="chart-box" id="chart-${symbol}"></div>
-        <div class="legend">
-            <div class="legend-item">
+        <div class="legend" id="legend-${symbol}">
+            <div class="legend-item legend-basis">
                 <div class="legend-color basis"></div>
                 <span>Basis</span>
             </div>
-            <div class="legend-item">
+            <div class="legend-item legend-oi" style="display: none;">
                 <div class="legend-color oi"></div>
                 <span>OI</span>
             </div>
@@ -217,6 +223,8 @@ function createChart(symbol) {
             }
         },
         xAxis: {
+            min: BASE_DATE + (MARKET_OPEN * 1000),   // 9:15 AM
+            max: BASE_DATE + (MARKET_CLOSE * 1000),  // 3:30 PM
             events: {
                 afterSetExtremes: syncExtremes
             }
@@ -233,8 +241,8 @@ function createChart(symbol) {
             ]
         },
         series: [
-            { name: 'Basis', data: [], color: COLORS.basis, lineWidth: 2 },
-            { name: 'OI', data: [], color: COLORS.oi, lineWidth: 1.5 }
+            { name: 'Basis', data: [], color: COLORS.basis, lineWidth: 2, visible: true },
+            { name: 'OI', data: [], color: COLORS.oi, lineWidth: 1.5, visible: false }
         ]
     });
 }
@@ -404,8 +412,6 @@ async function loadData(showOverlay = true, retryCount = 0) {
 
 // ============== CHART UPDATES ==============
 
-const BASE_DATE = Date.UTC(2025, 0, 1, 0, 0, 0);
-
 function updateCharts() {
     if (state.timeSeconds.length === 0) return;
     
@@ -420,10 +426,10 @@ function updateCharts() {
         const symbolData = state.normalizedData[symbol];
         if (!symbolData) return;
         
-        // Basis (fut_spot_diff_cumsum) - raw normalized
-        const basisValues = symbolData['fut_spot_diff_cumsum'];
+        // Basis (fut_spot_diff) - actual diff with EMA smoothing
+        const basisValues = symbolData['fut_spot_diff'];
         
-        // OI (oi_diff_cumsum) - raw normalized
+        // OI (oi_diff_cumsum) - cumsum with EMA smoothing
         const oiValues = symbolData['oi_diff_cumsum'];
         
         // Build data arrays
@@ -533,6 +539,47 @@ function updateConnectionStatus(connected) {
     
     if (dot) dot.classList.toggle('connected', connected);
     if (text) text.textContent = connected ? 'Live' : 'Disconnected';
+}
+
+// ============== VIEW MODE TOGGLE ==============
+
+function setViewMode(mode) {
+    state.viewMode = mode;
+    
+    // Update button styles
+    const btnBasis = document.getElementById('btnBasis');
+    const btnOI = document.getElementById('btnOI');
+    
+    if (btnBasis && btnOI) {
+        btnBasis.classList.toggle('active', mode === 'basis');
+        btnOI.classList.toggle('active', mode === 'oi');
+    }
+    
+    // Update legends
+    document.querySelectorAll('.legend-basis').forEach(el => {
+        el.style.display = mode === 'basis' ? 'flex' : 'none';
+    });
+    document.querySelectorAll('.legend-oi').forEach(el => {
+        el.style.display = mode === 'oi' ? 'flex' : 'none';
+    });
+    
+    // Toggle series visibility in all charts
+    Object.values(state.charts).forEach(chart => {
+        if (!chart || !chart.series) return;
+        
+        // Series 0 = Basis, Series 1 = OI
+        const basisSeries = chart.series[0];
+        const oiSeries = chart.series[1];
+        
+        if (basisSeries) {
+            basisSeries.setVisible(mode === 'basis', false);
+        }
+        if (oiSeries) {
+            oiSeries.setVisible(mode === 'oi', false);
+        }
+        
+        chart.redraw();
+    });
 }
 
 // ============== UTILITIES ==============

@@ -410,12 +410,13 @@ def _filter_by_expiry(normalized: dict, expiry: str = None) -> tuple:
         return {}, []
     
     # Extract all available expiries from column names
+    # Column format: 06JAN26_24000CE_iv_diff_cumsum (day+month+year format)
     available_expiries = set()
     for col_name in normalized.keys():
-        # Column format: DEC24_24000CE_iv_diff_cumsum
         if "_" in col_name:
             exp = col_name.split("_")[0]
-            if exp and len(exp) >= 4 and exp[:3].isalpha():
+            # Format: 2-digit day + 3-letter month + 2-digit year (e.g., "06JAN26")
+            if exp and len(exp) >= 7 and exp[:2].isdigit() and exp[2:5].isalpha() and exp[5:7].isdigit():
                 available_expiries.add(exp)
     
     available_expiries = sorted(available_expiries)
@@ -483,12 +484,13 @@ async def get_normalized_data(index_name: str, expiry: str = None, strikes: str 
     all_strikes = set()
     for col_name in filtered_data.keys():
         # Match standard columns: EXPIRY_STRIKE_CE/PE_metric
-        match = re.match(r'^([A-Z]{3}\d{2})_(\d+)(CE|PE)_', col_name)
+        # New format: 06JAN26_24000CE_... (day + month + year)
+        match = re.match(r'^(\d{2}[A-Z]{3}\d{2})_(\d+)(CE|PE)_', col_name)
         if match:
             all_strikes.add(int(match.group(2)))
         else:
-            # Also match skew columns: EXPIRY_STRIKE_vega_skew
-            match_skew = re.match(r'^([A-Z]{3}\d{2})_(\d+)_vega_skew', col_name)
+            # Also match skew columns: 06JAN26_24000_vega_skew
+            match_skew = re.match(r'^(\d{2}[A-Z]{3}\d{2})_(\d+)_vega_skew', col_name)
             if match_skew:
                 all_strikes.add(int(match_skew.group(2)))
     available_strikes = sorted(all_strikes)
@@ -497,15 +499,15 @@ async def get_normalized_data(index_name: str, expiry: str = None, strikes: str 
     requested_strikes = set(int(s.strip()) for s in strikes.split(',') if s.strip().isdigit())
     filtered_by_strikes = {}
     for col_name, values in filtered_data.items():
-        # Match standard CE/PE columns
-        match = re.match(r'^([A-Z]{3}\d{2})_(\d+)(CE|PE)_', col_name)
+        # Match standard CE/PE columns (new format: 06JAN26_24000CE_...)
+        match = re.match(r'^(\d{2}[A-Z]{3}\d{2})_(\d+)(CE|PE)_', col_name)
         if match:
             strike = int(match.group(2))
             if strike in requested_strikes:
                 filtered_by_strikes[col_name] = values
         else:
-            # Match skew columns
-            match_skew = re.match(r'^([A-Z]{3}\d{2})_(\d+)_vega_skew', col_name)
+            # Match skew columns (new format: 06JAN26_24000_vega_skew)
+            match_skew = re.match(r'^(\d{2}[A-Z]{3}\d{2})_(\d+)_vega_skew', col_name)
             if match_skew:
                 strike = int(match_skew.group(2))
                 if strike in requested_strikes:
@@ -597,10 +599,10 @@ async def normalized_ws(websocket: WebSocket):
                         else:
                             filtered_data = {k: v for k, v in filtered_data.items() if not k.endswith('_ema')}
                         
-                        # Parse available strikes
+                        # Parse available strikes (new format: 06JAN26_24000CE_...)
                         all_strikes = set()
                         for col_name in filtered_data.keys():
-                            match = re.match(r'^([A-Z]{3}\d{2})_(\d+)(CE|PE)_', col_name)
+                            match = re.match(r'^(\d{2}[A-Z]{3}\d{2})_(\d+)(CE|PE)_', col_name)
                             if match:
                                 all_strikes.add(int(match.group(2)))
                         available_strikes = sorted(all_strikes)
@@ -610,7 +612,7 @@ async def normalized_ws(websocket: WebSocket):
                             requested_strikes = set(strikes)
                             filtered_by_strikes = {}
                             for col_name, values in filtered_data.items():
-                                match = re.match(r'^([A-Z]{3}\d{2})_(\d+)(CE|PE)_', col_name)
+                                match = re.match(r'^(\d{2}[A-Z]{3}\d{2})_(\d+)(CE|PE)_', col_name)
                                 if match:
                                     strike = int(match.group(2))
                                     if strike in requested_strikes:
@@ -707,14 +709,14 @@ async def broadcast_normalized_update(index_name: str):
         # Filter data by expiry
         filtered_data, available_expiries = _filter_by_expiry(normalized, sub_expiry)
         
-        # Parse all available strikes (including skew columns)
+        # Parse all available strikes (new format: 06JAN26_24000CE_...)
         all_strikes = set()
         for col_name in filtered_data.keys():
-            match = re.match(r'^([A-Z]{3}\d{2})_(\d+)(CE|PE)_', col_name)
+            match = re.match(r'^(\d{2}[A-Z]{3}\d{2})_(\d+)(CE|PE)_', col_name)
             if match:
                 all_strikes.add(int(match.group(2)))
             else:
-                match_skew = re.match(r'^([A-Z]{3}\d{2})_(\d+)_vega_skew', col_name)
+                match_skew = re.match(r'^(\d{2}[A-Z]{3}\d{2})_(\d+)_vega_skew', col_name)
                 if match_skew:
                     all_strikes.add(int(match_skew.group(2)))
         available_strikes = sorted(all_strikes)
@@ -723,15 +725,15 @@ async def broadcast_normalized_update(index_name: str):
         if sub_strikes:
             filtered_by_strikes = {}
             for col_name, values in filtered_data.items():
-                # Match standard CE/PE columns
-                match = re.match(r'^([A-Z]{3}\d{2})_(\d+)(CE|PE)_', col_name)
+                # Match standard CE/PE columns (new format)
+                match = re.match(r'^(\d{2}[A-Z]{3}\d{2})_(\d+)(CE|PE)_', col_name)
                 if match:
                     strike = int(match.group(2))
                     if strike in sub_strikes:
                         filtered_by_strikes[col_name] = values
                 else:
-                    # Match skew columns
-                    match_skew = re.match(r'^([A-Z]{3}\d{2})_(\d+)_vega_skew', col_name)
+                    # Match skew columns (new format)
+                    match_skew = re.match(r'^(\d{2}[A-Z]{3}\d{2})_(\d+)_vega_skew', col_name)
                     if match_skew:
                         strike = int(match_skew.group(2))
                         if strike in sub_strikes:
@@ -794,14 +796,11 @@ async def get_futures_metadata_api():
 @app.get("/api/futures/normalized")
 async def get_futures_normalized_api(smooth: bool = True):
     """
-    Get normalized futures data.
-    
-    Args:
-        smooth: If True, returns EMA smoothed data (_ema columns). If False, returns raw data.
+    Get futures data with EMA smoothing.
     
     Returns: {
         normalized: {
-            "NIFTY": {fut_spot_diff_cumsum: [...], oi_diff_cumsum: [...]},
+            "NIFTY": {fut_spot_diff: [...], oi_diff_cumsum: [...]},
             "RELIANCE": {...},
             ...
         },
@@ -823,19 +822,9 @@ async def get_futures_normalized_api(smooth: bool = True):
     # Get metadata
     metadata = await run_in_threadpool(get_futures_metadata)
     
-    # Filter by smooth mode
-    filtered_normalized = {}
-    for symbol, data in normalized.items():
-        if smooth:
-            # Keep only _ema columns
-            filtered_normalized[symbol] = {k: v for k, v in data.items() if k.endswith('_ema')}
-        else:
-            # Keep only non-_ema columns
-            filtered_normalized[symbol] = {k: v for k, v in data.items() if not k.endswith('_ema')}
-    
-    # Convert numpy arrays to lists
+    # Convert numpy arrays to lists (no filtering - all data is EMA smoothed)
     normalized_json = {}
-    for symbol, data in filtered_normalized.items():
+    for symbol, data in normalized.items():
         normalized_json[symbol] = {}
         for col_name, values in data.items():
             if isinstance(values, np.ndarray):
@@ -849,7 +838,6 @@ async def get_futures_normalized_api(smooth: bool = True):
         "time_seconds": metadata.get("time_seconds", []),
         "index_futures": metadata.get("index_futures", []),
         "equity_futures": metadata.get("equity_futures", []),
-        "smooth": smooth,
     }
 
 
@@ -878,17 +866,9 @@ async def futures_ws(websocket: WebSocket):
                 metadata = await run_in_threadpool(get_futures_metadata)
                 
                 if normalized:
-                    # Filter by smooth mode
-                    filtered_normalized = {}
-                    for symbol, symbol_data in normalized.items():
-                        if smooth:
-                            filtered_normalized[symbol] = {k: v for k, v in symbol_data.items() if k.endswith('_ema')}
-                        else:
-                            filtered_normalized[symbol] = {k: v for k, v in symbol_data.items() if not k.endswith('_ema')}
-                    
-                    # Convert to JSON
+                    # Convert to JSON (no filtering needed - all data is EMA smoothed)
                     normalized_json = {}
-                    for symbol, symbol_data in filtered_normalized.items():
+                    for symbol, symbol_data in normalized.items():
                         normalized_json[symbol] = {}
                         for col_name, values in symbol_data.items():
                             if isinstance(values, np.ndarray):
@@ -936,17 +916,9 @@ async def broadcast_futures_update():
         
         smooth = sub.get("smooth", True)
         
-        # Filter by smooth mode
-        filtered_normalized = {}
-        for symbol, symbol_data in normalized.items():
-            if smooth:
-                filtered_normalized[symbol] = {k: v for k, v in symbol_data.items() if k.endswith('_ema')}
-            else:
-                filtered_normalized[symbol] = {k: v for k, v in symbol_data.items() if not k.endswith('_ema')}
-        
-        # Convert to JSON
+        # Convert to JSON (no filtering needed - all data is EMA smoothed)
         normalized_json = {}
-        for symbol, symbol_data in filtered_normalized.items():
+        for symbol, symbol_data in normalized.items():
             normalized_json[symbol] = {}
             for col_name, values in symbol_data.items():
                 if isinstance(values, np.ndarray):

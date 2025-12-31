@@ -274,6 +274,8 @@ function initCharts() {
                 }
             },
             xAxis: {
+                min: BASE_DATE + (MARKET_OPEN * 1000),   // 9:15 AM
+                max: BASE_DATE + (MARKET_CLOSE * 1000),  // 3:30 PM
                 events: {
                     afterSetExtremes: syncExtremes
                 }
@@ -837,6 +839,10 @@ function toggleStrike(type, strike) {
 let updatePending = false;
 let updateQueued = false;
 const BASE_DATE = Date.UTC(2025, 0, 1, 0, 0, 0);
+
+// Market timing constants (in seconds from midnight)
+const MARKET_OPEN = 33300;   // 9:15 AM IST
+const MARKET_CLOSE = 55800;  // 3:30 PM IST
 
 function updateCharts(forceRedraw = false) {
     if (forceRedraw) {

@@ -30,7 +30,7 @@ DEFAULT_INTERVAL = "S10"
 MAX_LIMIT = 25_00
 MIN_FETCH_LIMIT = 10
 LIMIT_BUFFER_SECONDS = 5
-THREE_MINUTES = 580
+THREE_MINUTES = 30
 
 # Trading day cadence windows (IST) - Market hours 9:15 to 15:30
 # TODO: Remove 23:59 window after testing - only for debugging

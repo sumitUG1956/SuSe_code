@@ -60,12 +60,14 @@ def _parse_trading_symbol(symbol: str) -> Optional[Dict]:
                     expiry = " ".join(parts[2:5])  # "26 DEC 24"
                     
                     if opt_type in ("CE", "PE"):
+                        # Include day to distinguish same-month expiries (e.g., "06JAN26" vs "27JAN26")
+                        expiry_short = f"{parts[2]}{parts[3]}{parts[4][-2:]}"  # "06JAN26"
                         return {
                             "index": index_name,
                             "strike": strike,
                             "type": opt_type,
                             "expiry": expiry,
-                            "expiry_short": parts[3] + parts[4][-2:],  # "DEC24"
+                            "expiry_short": expiry_short,
                         }
                 except (ValueError, IndexError):
                     pass
@@ -764,18 +766,21 @@ def get_metadata_only(index_name: str) -> Optional[Dict]:
             return None
     
     # Extract available expiries and strikes from column names
+    # Column format: {expiry}_{strike}{CE|PE}_{metric}
+    # Expiry format: "06JAN26" (day + month + year)
     available_expiries = set()
     all_strikes = set()
     
     for col_name in norm_data.keys():
-        # Extract expiry: DEC24_24000CE_iv_diff_cumsum -> DEC24
+        # Extract expiry: 06JAN26_24000CE_iv_diff_cumsum -> 06JAN26
         if "_" in col_name:
             exp = col_name.split("_")[0]
-            if exp and len(exp) >= 4 and exp[:3].isalpha():
+            # Format: 2-digit day + 3-letter month + 2-digit year (e.g., "06JAN26")
+            if exp and len(exp) >= 7 and exp[:2].isdigit() and exp[2:5].isalpha() and exp[5:7].isdigit():
                 available_expiries.add(exp)
         
-        # Extract strike
-        match = re.match(r'^([A-Z]{3}\d{2})_(\d+)(CE|PE)_', col_name)
+        # Extract strike from new format: 06JAN26_24000CE_... 
+        match = re.match(r'^(\d{2}[A-Z]{3}\d{2})_(\d+)(CE|PE)_', col_name)
         if match:
             all_strikes.add(int(match.group(2)))
     
