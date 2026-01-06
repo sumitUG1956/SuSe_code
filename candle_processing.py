@@ -1,50 +1,67 @@
 #!/usr/bin/env python3
 
+"""
+Candle Processing Module - Transform and Calculate Options Data
+Handles raw candle data transformation, Black-76 option pricing, and Greeks calculation
+Key functions: Implied Volatility solver, Delta/Vega/Theta calculation, feature engineering
+"""
+
 from datetime import datetime, date, time, timezone
 from typing import Optional
 import sys
 
-import numpy as np
-import polars as pl
+import numpy as np  # Numerical operations
+import polars as pl  # Fast DataFrame processing
 from zoneinfo import ZoneInfo
 
-IST = ZoneInfo("Asia/Kolkata")
+# Constants and Configuration
+IST = ZoneInfo("Asia/Kolkata")  # Indian Standard Time zone
 CANDLE_COLUMNS = ["Time", "Open", "High", "Low", "Close", "Volume", "OpenInterest"]
-NUMERIC_DEFAULTS = {"Volume": 0.0, "OpenInterest": 0.0}
-RISK_FREE_RATE = 0.10
-SIGMA_LOW = 0.001
-SIGMA_HIGH = 5.0
-SIGMA_PRECISION = 1e-5
-MAX_IV_ITERATIONS = 100
-MS_IN_YEAR = 1000 * 60 * 60 * 24 * 365
-SQRT_TWO = np.sqrt(2.0)
-SPOT_COLUMN = "SpotAverage"
-IV_COLUMN = "IV"
-DELTA_COLUMN = "Delta"
-TIMEVALUE_COLUMN = "TimeValue"
-IV_DIFF_COLUMN = "IVDiff"
-IV_DIFF_CUMSUM_COLUMN = "IVDiffCumSum"
-VEGA_COLUMN = "Vega"
-THETA_COLUMN = "Theta"
-DELTA_DIFF_COLUMN = "DeltaDiff"
-DELTA_DIFF_CUMSUM_COLUMN = "DeltaDiffCumSum"
-VEGA_DIFF_COLUMN = "VegaDiff"
-VEGA_DIFF_CUMSUM_COLUMN = "VegaDiffCumSum"
-THETA_DIFF_COLUMN = "ThetaDiff"
-THETA_DIFF_CUMSUM_COLUMN = "ThetaDiffCumSum"
-TIMEVALUE_DIFF_COLUMN = "TimeValueDiff"
-TIMEVALUE_DIFF_CUMSUM_COLUMN = "TimeValueDiffCumSum"
-TIMEVALUE_VOL_PROD_COLUMN = "TimeValueVolProd"
-TIMEVALUE_VOL_PROD_CUMSUM_COLUMN = "TimeValueVolProdCumSum"
-OI_DIFF_COLUMN = "OpenInterestDiff"
-OI_DIFF_CUMSUM_COLUMN = "OpenInterestDiffCumSum"
-AVG_DIFF_COLUMN = "AverageDiff"
-AVG_DIFF_CUMSUM_COLUMN = "AverageDiffCumSum"
-AVG_VOL_PROD_COLUMN = "AverageVolProd"
-AVG_VOL_PROD_CUMSUM_COLUMN = "AverageVolProdCumSum"
-FUT_SPOT_DIFF_COLUMN = "FutureSpotDiff"
-FUT_SPOT_DIFF_CUMSUM_COLUMN = "FutureSpotDiffCumSum"
+NUMERIC_DEFAULTS = {"Volume": 0.0, "OpenInterest": 0.0}  # Default values for missing data
+
+# Black-76 Model Constants
+RISK_FREE_RATE = 0.10  # 10% annual risk-free rate
+SIGMA_LOW = 0.001  # Minimum implied volatility for bisection search
+SIGMA_HIGH = 5.0  # Maximum implied volatility for bisection search
+SIGMA_PRECISION = 1e-5  # Convergence precision for IV solver
+MAX_IV_ITERATIONS = 100  # Maximum iterations for IV bisection method
+
+# Time Constants
+MS_IN_YEAR = 1000 * 60 * 60 * 24 * 365  # Milliseconds in a year
+SQRT_TWO = np.sqrt(2.0)  # Precomputed constant for error function
+
+# Column Names - Used throughout for consistency
+SPOT_COLUMN = "SpotAverage"  # Spot price reference
+IV_COLUMN = "IV"  # Implied Volatility (%)
+DELTA_COLUMN = "Delta"  # Price sensitivity to spot
+TIMEVALUE_COLUMN = "TimeValue"  # Time value of option
+IV_DIFF_COLUMN = "IVDiff"  # IV change from previous candle
+IV_DIFF_CUMSUM_COLUMN = "IVDiffCumSum"  # Cumulative IV changes
+VEGA_COLUMN = "Vega"  # Sensitivity to volatility
+THETA_COLUMN = "Theta"  # Time decay (per day)
+DELTA_DIFF_COLUMN = "DeltaDiff"  # Delta change
+DELTA_DIFF_CUMSUM_COLUMN = "DeltaDiffCumSum"  # Cumulative delta changes
+VEGA_DIFF_COLUMN = "VegaDiff"  # Vega change
+VEGA_DIFF_CUMSUM_COLUMN = "VegaDiffCumSum"  # Cumulative vega changes
+THETA_DIFF_COLUMN = "ThetaDiff"  # Theta change
+THETA_DIFF_CUMSUM_COLUMN = "ThetaDiffCumSum"  # Cumulative theta changes
+TIMEVALUE_DIFF_COLUMN = "TimeValueDiff"  # Time value change
+TIMEVALUE_DIFF_CUMSUM_COLUMN = "TimeValueDiffCumSum"  # Cumulative time value changes
+TIMEVALUE_VOL_PROD_COLUMN = "TimeValueVolProd"  # TimeValue × Volume product
+TIMEVALUE_VOL_PROD_CUMSUM_COLUMN = "TimeValueVolProdCumSum"  # Cumulative product
+OI_DIFF_COLUMN = "OpenInterestDiff"  # Open Interest change
+OI_DIFF_CUMSUM_COLUMN = "OpenInterestDiffCumSum"  # Cumulative OI changes
+AVG_DIFF_COLUMN = "AverageDiff"  # Average price change
+AVG_DIFF_CUMSUM_COLUMN = "AverageDiffCumSum"  # Cumulative average changes
+AVG_VOL_PROD_COLUMN = "AverageVolProd"  # Average × Volume product
+AVG_VOL_PROD_CUMSUM_COLUMN = "AverageVolProdCumSum"  # Cumulative product
+FUT_SPOT_DIFF_COLUMN = "FutureSpotDiff"  # Future - Spot difference
+FUT_SPOT_DIFF_CUMSUM_COLUMN = "FutureSpotDiffCumSum"  # Cumulative difference
+
+# Global cache for spot data (keyed by label like "NIFTY", "BANKNIFTY")
 SPOT_CACHE: dict[str, pl.DataFrame] = {}
+
+# Error Function Approximation Constants (for normal CDF calculation)
 _ERF_A1 = 0.254829592
 _ERF_A2 = -0.284496736
 _ERF_A3 = 1.421413741
@@ -53,19 +70,44 @@ _ERF_A5 = 1.061405429
 _ERF_P = 0.3275911
 
 
-
 def _empty_frame():
+    """
+    Create empty DataFrame with candle columns
+    
+    Returns:
+        pl.DataFrame: Empty frame with CANDLE_COLUMNS schema
+    """
     return pl.DataFrame({column: [] for column in CANDLE_COLUMNS})
 
 
 def _ensure_frame(candles):
+    """
+    Convert raw candles list to Polars DataFrame with proper schema
+    
+    Args:
+        candles: List of candle data (list of lists/tuples)
+    
+    Returns:
+        pl.DataFrame: Properly formatted candle DataFrame
+    
+    Process:
+        1. Handle empty candles case
+        2. Detect columns from first row width
+        3. Create DataFrame with detected columns
+        4. Add missing columns with defaults
+        5. Reorder to standard column order
+        6. Cast to Float32 for memory efficiency
+        7. Calculate Average column
+    """
     if not candles:
         return _empty_frame()
 
+    # Detect columns from row width
     width = len(candles[0])
     cols = CANDLE_COLUMNS[:width]
     df = pl.DataFrame(candles, schema=cols, orient="row")  # type: ignore[arg-type]
 
+    # Add missing columns with default values
     missing = [column for column in CANDLE_COLUMNS if column not in df.columns]
     if missing:
         df = df.with_columns(
@@ -75,8 +117,10 @@ def _ensure_frame(candles):
             ]
         )
 
+    # Reorder to standard column order
     df = df.select(CANDLE_COLUMNS)
 
+    # Cast numeric columns to Float32 for efficiency
     df = df.with_columns(
         [
             pl.col("Time").cast(pl.Datetime(time_unit="ms", time_zone="UTC")),
